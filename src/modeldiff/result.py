@@ -81,6 +81,7 @@ class ModelDiffReport:
     overall: dict[str, Any]
     aggregate_metrics: dict[str, dict[str, float]]
     disagreement: dict[str, float]
+    split: dict[str, Any] = field(default_factory=dict)
     regression_regions: list[RegionResult] = field(default_factory=list)
     improvement_regions: list[RegionResult] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
@@ -116,6 +117,7 @@ class ModelDiffReport:
                 "discovery": self.discovery_count,
                 "validation": self.validation_count,
             },
+            "split": self.split,
             "overall": self.overall,
             "aggregate_metrics": self.aggregate_metrics,
             "prediction_diagnostics": self.disagreement,

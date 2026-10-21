@@ -96,6 +96,30 @@ def test_model_adapter() -> None:
     assert "identical" in " ".join(report.warnings)
 
 
+def test_group_strategy_is_recorded_and_used_by_public_api(
+    fast_config: ModelDiffConfig,
+) -> None:
+    X = pd.DataFrame({"x": np.arange(80)})
+    groups = np.repeat(np.arange(20), 4)
+    y = np.linspace(0, 1, 80)
+    report = modeldiff.compare_predictions(
+        y + 0.2,
+        y + 0.1,
+        X,
+        y,
+        "regression",
+        "mae",
+        config=fast_config,
+        validation_strategy="group",
+        groups=groups,
+    )
+
+    assert report.split["strategy"] == "group"
+    assert report.split["group_count"] == 20
+    assert report.discovery_count + report.validation_count == len(X)
+    assert report.to_dict()["split"] == report.split
+
+
 def test_null_comparison_reports_no_significant_regions(fast_config: ModelDiffConfig) -> None:
     rng = np.random.default_rng(91)
     X = pd.DataFrame({"x1": rng.normal(size=600), "x2": rng.normal(size=600)})

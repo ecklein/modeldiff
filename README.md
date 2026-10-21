@@ -87,6 +87,56 @@ significant_regressions = report.regressions(significant_only=True)
 `X` may be a pandas DataFrame or two-dimensional NumPy array. DataFrames produce more readable
 conditions. Arrays receive the names `x0`, `x1`, and so on.
 
+## Leakage-aware validation splits
+
+Random splitting remains the default. For repeated entities or ordered data, select a strategy that
+keeps related observations out of both sides of the discovery/validation boundary:
+
+```python
+# All rows for a customer remain in one partition.
+group_report = compare_predictions(
+    old_predictions,
+    new_predictions,
+    X,
+    y,
+    task="regression",
+    metric="mae",
+    validation_strategy="group",
+    groups=customer_ids,
+)
+
+# Earlier timestamps are used for discovery and later timestamps for validation.
+time_report = compare_predictions(
+    old_predictions,
+    new_predictions,
+    X,
+    y,
+    task="regression",
+    metric="mae",
+    validation_strategy="time",
+    time_values=event_timestamps,
+)
+
+# Use an existing partition. Integer indices and boolean masks are both accepted.
+explicit_report = compare_predictions(
+    old_predictions,
+    new_predictions,
+    X,
+    y,
+    task="regression",
+    metric="mae",
+    validation_strategy="explicit",
+    discovery_indices=development_mask,
+    validation_indices=holdout_mask,
+)
+```
+
+Group and time boundaries are chosen as close as possible to `discovery_fraction` without splitting
+a group or equal timestamp. Explicit partitions must assign every observation exactly once. Invalid
+or overlapping partitions raise `ValueError`; small or substantially unbalanced partitions add a
+report warning. `report.split` and serialized reports contain the strategy, actual fraction, counts,
+and strategy-specific audit metadata.
+
 ## Interpreting delta
 
 ModelDiff-ML uses one convention everywhere:
@@ -159,6 +209,17 @@ modeldiff-ml compare \
   --json report.json
 ```
 
+The CLI supports the same split strategies with `--validation-strategy` and a control column:
+
+```bash
+modeldiff-ml compare ... --validation-strategy group --group-column customer_id
+modeldiff-ml compare ... --validation-strategy time --time-column event_time
+modeldiff-ml compare ... --validation-strategy explicit --split-column partition
+```
+
+An explicit split column must contain only `discovery` and `validation`. Split-control columns are
+automatically excluded from the region-search features.
+
 Use `--exclude COLUMN` repeatedly to omit non-feature columns. CI-oriented checks return exit code 1:
 
 ```bash
@@ -185,12 +246,11 @@ shift, correlated repeated observations, or extensive repeated analyses by a hum
 test set is appropriate before high-stakes deployment decisions.
 
 V1 supports binary classification and regression only. It does not include multiclass evaluation,
-causal claims, fairness-specific analysis, time/group-aware splitting, distributed execution, SHAP,
-LLM evaluation, monitoring infrastructure, model registries, dashboards, or automated remediation.
+causal claims, fairness-specific analysis, distributed execution, SHAP, LLM evaluation, monitoring
+infrastructure, model registries, dashboards, or automated remediation.
 
 ## Roadmap
 
-- Group-aware and time-based validation strategies
 - Multiclass observation-level losses
 - Cross-validated discovery and stability summaries
 - Pluggable, documented region scoring policies

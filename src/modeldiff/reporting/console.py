@@ -45,6 +45,7 @@ def render_console(report: ModelDiffReport) -> str:
         "",
         f"Samples: {report.sample_count:,} "
         f"({report.discovery_count:,} discovery / {report.validation_count:,} validation)",
+        f"Validation strategy: {report.split.get('strategy', 'random')}",
         f"Task: {report.task}",
         f"Primary metric: {report.metric}",
         "",

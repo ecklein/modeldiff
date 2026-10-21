@@ -59,7 +59,7 @@ def render_html(report: ModelDiffReport) -> str:
     warnings = "".join(f"<li>{escape(item)}</li>" for item in report.warnings) or "<li>None</li>"
     config_rows = "".join(
         f"<tr><td>{escape(key)}</td><td>{escape(str(value))}</td></tr>"
-        for key, value in report.configuration.to_dict().items()
+        for key, value in {**report.configuration.to_dict(), **report.split}.items()
     )
     delta = float(report.overall["absolute_delta"])
     verdict = "improvement" if delta < 0 else "regression" if delta > 0 else "no change"

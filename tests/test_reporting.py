@@ -18,12 +18,14 @@ def test_report_formats_are_standalone_and_serializable(tmp_path: Path) -> None:
     report = modeldiff.compare_predictions(y + 1, y + 0.5, X, y, "regression", "mae", config=config)
     text = report.summary()
     assert "ModelDiff-ML Report" in text
+    assert "Validation strategy: random" in text
     json_path = tmp_path / "report.json"
     html_path = tmp_path / "report.html"
     report.to_json(json_path)
     report.to_html(html_path)
     loaded = json.loads(json_path.read_text())
     assert loaded["schema_version"] == "1.0"
+    assert loaded["split"]["strategy"] == "random"
     html = html_path.read_text()
     assert "<!doctype html>" in html
     assert "Methodology and configuration" in html
@@ -68,3 +70,47 @@ def test_cli_writes_outputs_and_enforces_overall_threshold(tmp_path: Path) -> No
     )
     assert exit_code == 1
     assert html.exists() and json_path.exists()
+
+
+def test_cli_supports_group_split(tmp_path: Path) -> None:
+    data = pd.DataFrame(
+        {
+            "feature": np.arange(40),
+            "customer": np.repeat(np.arange(10), 4),
+            "y": np.arange(40, dtype=float),
+            "old": np.arange(40, dtype=float) + 0.2,
+            "new": np.arange(40, dtype=float) + 0.1,
+        }
+    )
+    csv = tmp_path / "grouped.csv"
+    json_path = tmp_path / "grouped.json"
+    data.to_csv(csv, index=False)
+
+    exit_code = main(
+        [
+            "compare",
+            "--data",
+            str(csv),
+            "--target",
+            "y",
+            "--baseline-pred",
+            "old",
+            "--candidate-pred",
+            "new",
+            "--task",
+            "regression",
+            "--metric",
+            "mae",
+            "--validation-strategy",
+            "group",
+            "--group-column",
+            "customer",
+            "--json",
+            str(json_path),
+        ]
+    )
+
+    assert exit_code == 0
+    result = json.loads(json_path.read_text())
+    assert result["split"]["strategy"] == "group"
+    assert result["split"]["group_count"] == 10

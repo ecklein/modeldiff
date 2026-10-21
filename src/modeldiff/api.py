@@ -17,6 +17,7 @@ from modeldiff.analysis.regions import Region, discover_regions
 from modeldiff.config import ModelDiffConfig
 from modeldiff.metrics.base import get_loss_function, primary_metric_value
 from modeldiff.result import ModelDiffReport, RegionResult
+from modeldiff.splitting import SplitStrategy, make_split
 from modeldiff.statistics import benjamini_hochberg, bootstrap_mean_ci, sign_flip_test
 from modeldiff.utils import normalize_X, validate_inputs
 
@@ -101,11 +102,17 @@ def compare_predictions(
     *,
     config: ModelDiffConfig | None = None,
     random_state: int | None = None,
+    validation_strategy: SplitStrategy = "random",
+    groups: Any | None = None,
+    time_values: Any | None = None,
+    discovery_indices: Any | None = None,
+    validation_indices: Any | None = None,
 ) -> ModelDiffReport:
     """Compare precomputed model predictions and discover validated behavior changes.
 
     Positive loss deltas mean the candidate is worse. Regions are discovered on
-    one random partition and statistically evaluated on the independent holdout.
+    one partition and statistically evaluated on the independent holdout. Use
+    group or time splitting when random rows would leak related observations.
     """
     effective_config = config or ModelDiffConfig()
     if random_state is not None:
@@ -135,18 +142,24 @@ def compare_predictions(
     else:
         diagnostics = regression_disagreement(baseline, candidate)
 
+    split = make_split(
+        len(frame),
+        strategy=validation_strategy,
+        discovery_fraction=effective_config.discovery_fraction,
+        random_state=effective_config.random_state,
+        groups=groups,
+        time_values=time_values,
+        discovery_indices=discovery_indices,
+        validation_indices=validation_indices,
+    )
+    discovery_rows = split.discovery_indices
+    validation_rows = split.validation_indices
+    X_discovery = frame.iloc[discovery_rows].reset_index(drop=True)
+    X_validation = frame.iloc[validation_rows].reset_index(drop=True)
+    discovery_delta = delta[discovery_rows]
     rng = np.random.default_rng(effective_config.random_state)
-    order = rng.permutation(len(frame))
-    discovery_count = int(np.floor(effective_config.discovery_fraction * len(frame)))
-    discovery_indices = order[:discovery_count]
-    validation_indices = order[discovery_count:]
-    X_discovery = frame.iloc[discovery_indices].reset_index(drop=True)
-    X_validation = frame.iloc[validation_indices].reset_index(drop=True)
-    discovery_delta = delta[discovery_indices]
 
-    warnings: list[str] = []
-    if len(validation_indices) < 30:
-        warnings.append("Validation set has fewer than 30 observations; inference may be unstable.")
+    warnings = list(split.warnings)
     if np.array_equal(baseline, candidate):
         warnings.append("Candidate predictions are identical to baseline predictions.")
     if np.std(baseline) == 0 or np.std(candidate) == 0:
@@ -165,8 +178,8 @@ def compare_predictions(
         discovered_regressions,
         "regression",
         X_validation,
-        baseline_loss[validation_indices],
-        candidate_loss[validation_indices],
+        baseline_loss[validation_rows],
+        candidate_loss[validation_rows],
         effective_config,
         rng,
         warnings,
@@ -175,8 +188,8 @@ def compare_predictions(
         discovered_improvements,
         "improvement",
         X_validation,
-        baseline_loss[validation_indices],
-        candidate_loss[validation_indices],
+        baseline_loss[validation_rows],
+        candidate_loss[validation_rows],
         effective_config,
         rng,
         warnings,
@@ -210,8 +223,9 @@ def compare_predictions(
         task=task,
         metric=metric,
         sample_count=len(frame),
-        discovery_count=len(discovery_indices),
-        validation_count=len(validation_indices),
+        discovery_count=len(discovery_rows),
+        validation_count=len(validation_rows),
+        split=split.to_dict(),
         overall=overall,
         aggregate_metrics=aggregates,
         disagreement=diagnostics,
@@ -232,6 +246,11 @@ def compare(
     *,
     config: ModelDiffConfig | None = None,
     random_state: int | None = None,
+    validation_strategy: SplitStrategy = "random",
+    groups: Any | None = None,
+    time_values: Any | None = None,
+    discovery_indices: Any | None = None,
+    validation_indices: Any | None = None,
 ) -> ModelDiffReport:
     """Compare two fitted sklearn-style models on a shared evaluation dataset."""
     frame = normalize_X(X)
@@ -246,4 +265,9 @@ def compare(
         metric,
         config=config,
         random_state=random_state,
+        validation_strategy=validation_strategy,
+        groups=groups,
+        time_values=time_values,
+        discovery_indices=discovery_indices,
+        validation_indices=validation_indices,
     )

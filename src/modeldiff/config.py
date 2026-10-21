@@ -1,4 +1,4 @@
-"""Configuration for ModelDiff analyses."""
+"""Configuration for ModelDiff-ML analyses."""
 
 from __future__ import annotations
 

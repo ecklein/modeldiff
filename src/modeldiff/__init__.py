@@ -1,4 +1,4 @@
-"""ModelDiff: behavioral regression testing for machine-learning models."""
+"""ModelDiff-ML: behavioral regression testing for machine-learning models."""
 
 from .api import compare, compare_predictions
 from .config import ModelDiffConfig

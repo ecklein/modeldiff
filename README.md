@@ -1,23 +1,24 @@
-# ModelDiff
+# ModelDiff-ML
 
 Your candidate model improved AUC from 0.84 to 0.85. But did it get better everywhere?
 
-ModelDiff compares two machine-learning models at the observation level and automatically
+ModelDiff-ML compares two machine-learning models at the observation level and automatically
 discovers interpretable, statistically validated regions where the candidate behaves differently
 from the baseline. It is a small Python library built around NumPy, pandas, and SciPy—not an MLOps
 platform.
 
 ```text
 ordinary evaluation:  "The average metric improved."
-ModelDiff:             "It improved overall, but regressed for high-x1, low-x2 observations."
+ModelDiff-ML:          "It improved overall, but regressed for high-x1, low-x2 observations."
 ```
 
 ## Installation
 
-ModelDiff requires Python 3.11 or newer.
+ModelDiff-ML requires Python 3.11 or newer. The distribution is named `modeldiff-ml`; its
+Python import package remains the concise `modeldiff`.
 
 ```bash
-pip install modeldiff
+pip install modeldiff-ml
 ```
 
 For local development:
@@ -31,7 +32,7 @@ pytest
 
 ## Quickstart
 
-ModelDiff supports fitted sklearn-style models:
+ModelDiff-ML supports fitted sklearn-style models:
 
 ```python
 import modeldiff
@@ -47,11 +48,11 @@ report = modeldiff.compare(
 )
 
 print(report.summary())
-report.to_json("modeldiff.json")
-report.to_html("modeldiff.html")
+report.to_json("modeldiff-ml.json")
+report.to_html("modeldiff-ml.html")
 ```
 
-Binary classifiers must expose `predict_proba(X)` with two columns. ModelDiff deliberately does not
+Binary classifiers must expose `predict_proba(X)` with two columns. ModelDiff-ML deliberately does not
 turn an estimator's uncalibrated `decision_function` into a probability. Regression estimators need
 only `predict(X)`.
 
@@ -88,7 +89,7 @@ conditions. Arrays receive the names `x0`, `x1`, and so on.
 
 ## Interpreting delta
 
-ModelDiff uses one convention everywhere:
+ModelDiff-ML uses one convention everywhere:
 
 ```text
 delta_i = candidate_loss_i - baseline_loss_i
@@ -109,7 +110,7 @@ aggregate metrics table also reports conventional accuracy.
 
 ## How region discovery works
 
-1. ModelDiff computes a loss difference for every observation.
+1. ModelDiff-ML computes a loss difference for every observation.
 2. It deterministically divides the data into discovery and validation partitions.
 3. Numeric candidate conditions come from empirical quantiles. Categorical candidates use frequent
    equality and inequality conditions.
@@ -121,7 +122,7 @@ aggregate metrics table also reports conventional accuracy.
    p-values. Benjamini–Hochberg correction produces q-values across all tested regions.
 
 This separation matters: searching for a threshold and reporting a p-value from those same rows
-would understate selection bias. ModelDiff's independent holdout is a practical first defense.
+would understate selection bias. ModelDiff-ML's independent holdout is a practical first defense.
 
 ## Classification example
 
@@ -132,7 +133,7 @@ is better overall but deliberately worse when `x1` is high and `x2` is low:
 python examples/classification_example.py
 ```
 
-This is the central ModelDiff use case: aggregate improvement can hide a meaningful local
+This is the central ModelDiff-ML use case: aggregate improvement can hide a meaningful local
 regression. A generated standalone report is available at
 [`examples/classification_report.html`](examples/classification_report.html).
 
@@ -147,7 +148,7 @@ The CLI reads precomputed predictions from CSV. Unless excluded, columns other t
 prediction columns are features:
 
 ```bash
-modeldiff compare \
+modeldiff-ml compare \
   --data validation.csv \
   --target y \
   --baseline-pred old_prediction \
@@ -161,8 +162,8 @@ modeldiff compare \
 Use `--exclude COLUMN` repeatedly to omit non-feature columns. CI-oriented checks return exit code 1:
 
 ```bash
-modeldiff compare ... --fail-on-significant-regression
-modeldiff compare ... --max-overall-regression 0.01
+modeldiff-ml compare ... --fail-on-significant-regression
+modeldiff-ml compare ... --max-overall-regression 0.01
 ```
 
 The JSON output has schema version `1.0`, contains no model objects, and is suitable for CI artifact
@@ -198,4 +199,3 @@ LLM evaluation, monitoring infrastructure, model registries, dashboards, or auto
 ## License
 
 MIT
-

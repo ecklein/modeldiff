@@ -40,8 +40,8 @@ def render_console(report: ModelDiffReport) -> str:
     overall_delta = float(report.overall["absolute_delta"])
     verdict = "better" if overall_delta < 0 else "worse" if overall_delta > 0 else "unchanged"
     lines = [
-        "ModelDiff Report",
-        "================",
+        "ModelDiff-ML Report",
+        "===================",
         "",
         f"Samples: {report.sample_count:,} "
         f"({report.discovery_count:,} discovery / {report.validation_count:,} validation)",

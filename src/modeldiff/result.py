@@ -1,4 +1,4 @@
-"""Serializable result objects for ModelDiff."""
+"""Serializable result objects for ModelDiff-ML."""
 
 from __future__ import annotations
 
@@ -71,7 +71,7 @@ class RegionResult:
 
 @dataclass
 class ModelDiffReport:
-    """Complete, model-independent output of a ModelDiff comparison."""
+    """Complete, model-independent output of a ModelDiff-ML comparison."""
 
     task: str
     metric: str

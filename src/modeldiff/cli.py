@@ -14,7 +14,7 @@ from modeldiff import ModelDiffConfig, compare_predictions
 
 def build_parser() -> argparse.ArgumentParser:
     """Build the command-line argument parser."""
-    parser = argparse.ArgumentParser(prog="modeldiff", description=__doc__)
+    parser = argparse.ArgumentParser(prog="modeldiff-ml", description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
     compare_parser = subparsers.add_parser("compare", help="compare predictions in a CSV file")
     compare_parser.add_argument("--data", required=True, type=Path)
@@ -35,7 +35,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Run the ModelDiff CLI and return a CI-friendly exit status."""
+    """Run the ModelDiff-ML CLI and return a CI-friendly exit status."""
     args = build_parser().parse_args(argv)
     data = pd.read_csv(args.data)
     required = {args.target, args.baseline_pred, args.candidate_pred}

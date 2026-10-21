@@ -65,7 +65,7 @@ def render_html(report: ModelDiffReport) -> str:
     verdict = "improvement" if delta < 0 else "regression" if delta > 0 else "no change"
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
-<title>ModelDiff Report</title><style>
+<title>ModelDiff-ML Report</title><style>
 :root{{--ink:#17202a;--muted:#667085;--line:#e4e7ec;--bg:#f8fafc;--brand:#3157d5;--good:#087443;--bad:#b42318}}
 *{{box-sizing:border-box}} body{{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 system-ui,sans-serif}}
 main{{max-width:1100px;margin:40px auto;padding:0 22px}} h1{{font-size:32px;margin:0}} h2{{margin-top:36px;border-bottom:1px solid var(--line);padding-bottom:8px}}
@@ -73,7 +73,7 @@ main{{max-width:1100px;margin:40px auto;padding:0 22px}} h1{{font-size:32px;marg
 .card{{background:white;border:1px solid var(--line);border-radius:10px;padding:18px}} .label{{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.05em}} .value{{font-size:25px;font-weight:650;margin-top:4px}}
 table{{width:100%;border-collapse:collapse;background:#fff}} th,td{{text-align:left;padding:10px 12px;border-bottom:1px solid var(--line)}} th{{font-size:12px;color:var(--muted);text-transform:uppercase}} .table-wrap{{overflow-x:auto;border:1px solid var(--line);border-radius:8px}}
 .good{{color:var(--good);font-weight:650}} .bad{{color:var(--bad);font-weight:650}} .sig{{background:#fee4e2;color:var(--bad);padding:2px 7px;border-radius:10px}} .empty{{color:var(--muted)}} details{{margin-top:24px}}
-</style></head><body><main><h1>ModelDiff Report</h1><p class="sub">Independent discovery and validation · schema {escape(report.schema_version)}</p>
+</style></head><body><main><h1>ModelDiff-ML Report</h1><p class="sub">Independent discovery and validation · schema {escape(report.schema_version)}</p>
 <div class="cards"><div class="card"><div class="label">Samples</div><div class="value">{report.sample_count:,}</div></div>
 <div class="card"><div class="label">Task</div><div class="value">{escape(report.task.replace("_", " "))}</div></div>
 <div class="card"><div class="label">Primary metric</div><div class="value">{escape(report.metric)}</div></div>

@@ -17,7 +17,7 @@ def test_report_formats_are_standalone_and_serializable(tmp_path: Path) -> None:
     config = ModelDiffConfig(n_bootstrap=20, n_permutations=20, max_regions=2)
     report = modeldiff.compare_predictions(y + 1, y + 0.5, X, y, "regression", "mae", config=config)
     text = report.summary()
-    assert "ModelDiff Report" in text
+    assert "ModelDiff-ML Report" in text
     json_path = tmp_path / "report.json"
     html_path = tmp_path / "report.html"
     report.to_json(json_path)

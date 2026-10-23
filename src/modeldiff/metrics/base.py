@@ -22,6 +22,24 @@ def get_loss_function(task: str, metric: str) -> LossFunction:
     return {"squared_error": squared_error, "absolute_error": absolute_error}[normalized]
 
 
+def observation_losses(
+    task: str,
+    metric: str,
+    y: np.ndarray,
+    predictions: np.ndarray,
+    *,
+    threshold: float = 0.5,
+    epsilon: float = 1e-15,
+) -> np.ndarray:
+    """Compute the observation-level loss used for region and saved-check deltas."""
+    function = get_loss_function(task, metric)
+    if task == "binary_classification" and metric == "log_loss":
+        return function(y, predictions, epsilon=epsilon)
+    if task == "binary_classification" and metric == "accuracy":
+        return function(y, predictions, threshold=threshold)
+    return function(y, predictions)
+
+
 def primary_metric_value(losses: np.ndarray, metric: str) -> float:
     """Aggregate observation-level loss into the requested primary metric."""
     mean_loss = float(np.mean(losses))

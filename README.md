@@ -137,6 +137,67 @@ or overlapping partitions raise `ValueError`; small or substantially unbalanced 
 report warning. `report.split` and serialized reports contain the strategy, actual fraction, counts,
 and strategy-specific audit metadata.
 
+## Saved regression checks
+
+Turn selected discoveries into fixed checks that can be applied to future model versions without
+running region discovery again:
+
+```python
+checks = report.export_checks(
+    regions=report.regressions(significant_only=True),
+    max_loss_increase=0.01,
+    min_samples=100,
+    names=["High-utilization applicants"],  # one optional name per region
+)
+checks.to_json("model_checks.json")
+
+result = modeldiff.evaluate_checks(
+    checks="model_checks.json",
+    baseline_predictions=production_predictions,
+    candidate_predictions=new_predictions,
+    X=X_fresh,
+    y=y_fresh,
+)
+
+print(result.summary())
+result.to_json("check_results.json")
+result.to_html("check_results.html")
+```
+
+Calling `report.export_checks()` without `regions` exports significant regression regions. Passing
+an explicit empty list creates a valid empty suite. Each saved check has a deterministic ID, readable
+name, exact structured conditions, an absolute `max_loss_increase`, and `min_samples`. To tune one
+policy after export without mutating the original suite:
+
+```python
+check_id = checks.checks[0].id
+checks = checks.with_check_settings(
+    check_id,
+    name="Priority production segment",
+    max_loss_increase=0.005,
+    min_samples=250,
+)
+```
+
+Evaluation statuses are `fail` when the observed mean loss increase is above the tolerance, `pass`
+when it is equal to or below the tolerance, and `insufficient_data` when support is below the saved
+minimum. Overall status is `fail` if any check fails, otherwise `insufficient_data` if any check lacks
+support, `no_checks` for an empty suite, and `pass` only when every check in a nonempty suite passes.
+Zero-support slices never pass, and unavailable loss values serialize as `null`.
+
+Tolerance units are observation-level mean loss: accuracy uses misclassification-rate increase;
+`mae` uses mean absolute-error increase; and `mse`, `squared_error`, and `rmse` checks use mean
+squared-error increase. In particular, an RMSE check does **not** compare aggregate RMSE values.
+The suite preserves the classification threshold and log-loss epsilon used by the source report.
+Saved-suite and check-result JSON each use their own `1.0` schema, independently of comparison
+report schemas.
+
+These statuses are observed tolerance checks, not hypothesis-test conclusions. Evaluate against
+fresh data when possible: using discovery data is descriptive, and repeatedly tuning against the
+same evaluation set can overfit it. Exported checks cover only the selected findings, not every
+possible future regression. See [`examples/saved_checks_example.py`](examples/saved_checks_example.py)
+for a complete discover → save → fail/pass workflow.
+
 ## Interpreting delta
 
 ModelDiff-ML uses one convention everywhere:
@@ -227,8 +288,38 @@ modeldiff-ml compare ... --fail-on-significant-regression
 modeldiff-ml compare ... --max-overall-regression 0.01
 ```
 
-The JSON output has schema version `1.0`, contains no model objects, and is suitable for CI artifact
-processing.
+Export significant regression regions during comparison, then evaluate them on a fresh CSV:
+
+```bash
+modeldiff-ml compare \
+  --data discovery.csv \
+  --target y --baseline-pred old --candidate-pred new \
+  --task regression --metric mae \
+  --export-checks model_checks.json \
+  --check-max-loss-increase 0.01 \
+  --check-min-samples 100
+
+modeldiff-ml check \
+  --checks model_checks.json \
+  --data fresh_predictions.csv \
+  --target y \
+  --baseline-pred production_prediction \
+  --candidate-pred new_prediction \
+  --json check_results.json \
+  --html check_results.html
+```
+
+The `check` command infers task, metric, threshold, and epsilon from the suite. Its exit codes are:
+
+- `0`: a nonempty suite and every check passes.
+- `1`: at least one failure, insufficient-data check, or an empty suite.
+- `2`: invalid suite, invalid inputs, or command usage.
+
+For valid evaluations, requested JSON and HTML reports are written before exit code `1` is returned.
+The existing `compare` exit-code behavior is unchanged.
+
+Comparison JSON output has schema version `1.0`, contains no model objects, and is suitable for CI
+artifact processing.
 
 ## Configuration
 

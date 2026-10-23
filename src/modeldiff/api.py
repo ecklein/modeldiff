@@ -15,26 +15,11 @@ from modeldiff.analysis.disagreement import (
 from modeldiff.analysis.distributions import aggregate_metrics
 from modeldiff.analysis.regions import Region, discover_regions
 from modeldiff.config import ModelDiffConfig
-from modeldiff.metrics.base import get_loss_function, primary_metric_value
+from modeldiff.metrics.base import observation_losses, primary_metric_value
 from modeldiff.result import ModelDiffReport, RegionResult
 from modeldiff.splitting import SplitStrategy, make_split
 from modeldiff.statistics import benjamini_hochberg, bootstrap_mean_ci, sign_flip_test
 from modeldiff.utils import normalize_X, validate_inputs
-
-
-def _observation_losses(
-    task: str,
-    metric: str,
-    y: np.ndarray,
-    predictions: np.ndarray,
-    config: ModelDiffConfig,
-) -> np.ndarray:
-    function = get_loss_function(task, metric)
-    if task == "binary_classification" and metric == "log_loss":
-        return function(y, predictions, epsilon=config.epsilon)
-    if task == "binary_classification" and metric == "accuracy":
-        return function(y, predictions, threshold=config.threshold)
-    return function(y, predictions)
 
 
 def _validate_regions(
@@ -120,8 +105,22 @@ def compare_predictions(
     frame, target, baseline, candidate = validate_inputs(
         X, y, baseline_predictions, candidate_predictions, task, metric
     )
-    baseline_loss = _observation_losses(task, metric, target, baseline, effective_config)
-    candidate_loss = _observation_losses(task, metric, target, candidate, effective_config)
+    baseline_loss = observation_losses(
+        task,
+        metric,
+        target,
+        baseline,
+        threshold=effective_config.threshold,
+        epsilon=effective_config.epsilon,
+    )
+    candidate_loss = observation_losses(
+        task,
+        metric,
+        target,
+        candidate,
+        threshold=effective_config.threshold,
+        epsilon=effective_config.epsilon,
+    )
     delta = candidate_loss - baseline_loss
 
     baseline_primary = primary_metric_value(baseline_loss, metric)

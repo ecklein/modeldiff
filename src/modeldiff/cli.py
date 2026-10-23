@@ -10,7 +10,21 @@ from typing import Any
 
 import pandas as pd
 
-from modeldiff import ModelDiffConfig, compare_predictions
+from modeldiff import CheckSuite, ModelDiffConfig, compare_predictions, evaluate_checks
+
+
+def _nonnegative_float(value: str) -> float:
+    parsed = float(value)
+    if not 0 <= parsed < float("inf"):
+        raise argparse.ArgumentTypeError("must be a finite, nonnegative number")
+    return parsed
+
+
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return parsed
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -44,13 +58,44 @@ def build_parser() -> argparse.ArgumentParser:
     )
     compare_parser.add_argument("--fail-on-significant-regression", action="store_true")
     compare_parser.add_argument("--max-overall-regression", type=float)
+    compare_parser.add_argument(
+        "--export-checks",
+        type=Path,
+        help="export significant regression regions as a reusable check suite",
+    )
+    compare_parser.add_argument(
+        "--check-max-loss-increase",
+        type=_nonnegative_float,
+        default=0.0,
+        help="allowed mean loss increase for exported checks (default: 0)",
+    )
+    compare_parser.add_argument(
+        "--check-min-samples",
+        type=_positive_int,
+        default=30,
+        help="minimum fresh-data support for exported checks (default: 30)",
+    )
+
+    check_parser = subparsers.add_parser(
+        "check",
+        help="evaluate a saved check suite (exit 0 pass, 1 fail/incomplete/empty, 2 error)",
+        description=(
+            "Evaluate fixed saved checks. Exit 0: all pass; exit 1: failure, insufficient "
+            "data, or empty suite; exit 2: invalid suite, inputs, or usage."
+        ),
+    )
+    check_parser.add_argument("--checks", required=True, type=Path)
+    check_parser.add_argument("--data", required=True, type=Path)
+    check_parser.add_argument("--target", required=True)
+    check_parser.add_argument("--baseline-pred", required=True)
+    check_parser.add_argument("--candidate-pred", required=True)
+    check_parser.add_argument("--exclude", action="append", default=[])
+    check_parser.add_argument("--html", type=Path)
+    check_parser.add_argument("--json", type=Path)
     return parser
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    """Run the ModelDiff-ML CLI and return a CI-friendly exit status."""
-    parser = build_parser()
-    args = parser.parse_args(argv)
+def _run_compare(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
     data = pd.read_csv(args.data)
     required = {args.target, args.baseline_pred, args.candidate_pred}
     strategy_columns = {
@@ -111,6 +156,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         report.to_html(args.html)
     if args.json:
         report.to_json(args.json)
+    if args.export_checks:
+        suite = report.export_checks(
+            max_loss_increase=args.check_max_loss_increase,
+            min_samples=args.check_min_samples,
+        )
+        suite.to_json(args.export_checks)
+        print(f"Exported {len(suite.checks)} saved checks to {args.export_checks}.")
     failed = args.fail_on_significant_regression and bool(report.regressions(significant_only=True))
     if (
         args.max_overall_regression is not None
@@ -118,6 +170,43 @@ def main(argv: Sequence[str] | None = None) -> int:
     ):
         failed = True
     return 1 if failed else 0
+
+
+def _run_check(args: argparse.Namespace) -> int:
+    suite = CheckSuite.load(args.checks)
+    data = pd.read_csv(args.data)
+    required = {args.target, args.baseline_pred, args.candidate_pred}
+    missing = required - set(data.columns)
+    if missing:
+        raise ValueError(f"missing columns: {', '.join(sorted(missing))}")
+    excluded = required | set(args.exclude)
+    features = data.drop(columns=list(excluded), errors="ignore")
+    result = evaluate_checks(
+        suite,
+        data[args.baseline_pred],
+        data[args.candidate_pred],
+        features,
+        data[args.target],
+    )
+    print(result.summary())
+    if args.json:
+        result.to_json(args.json)
+    if args.html:
+        result.to_html(args.html)
+    return 0 if result.overall_status == "pass" else 1
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Run the ModelDiff-ML CLI and return a CI-friendly exit status."""
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if args.command == "compare":
+        return _run_compare(args, parser)
+    try:
+        return _run_check(args)
+    except (ValueError, TypeError, OSError, UnicodeError, pd.errors.ParserError) as error:
+        print(f"modeldiff-ml check: error: {error}", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":  # pragma: no cover

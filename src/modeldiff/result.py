@@ -4,12 +4,16 @@ from __future__ import annotations
 
 import json
 import math
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from modeldiff.analysis.regions import Condition
 from modeldiff.config import ModelDiffConfig
+
+if TYPE_CHECKING:
+    from modeldiff.checks import CheckSuite
 
 
 def _finite_or_none(value: Any) -> Any:
@@ -99,6 +103,34 @@ class ModelDiffReport:
         if significant_only:
             return [region for region in self.improvement_regions if region.significant]
         return list(self.improvement_regions)
+
+    def export_checks(
+        self,
+        regions: Sequence[RegionResult] | None = None,
+        *,
+        max_loss_increase: float = 0.0,
+        min_samples: int = 30,
+        names: Sequence[str] | None = None,
+    ) -> CheckSuite:
+        """Export selected regression regions as a reusable, fixed-condition suite.
+
+        When ``regions`` is omitted, statistically significant regression regions
+        are exported. Passing an explicit empty sequence creates a valid empty suite.
+        """
+        from modeldiff.checks import checks_from_regions
+
+        selected = self.regressions(significant_only=True) if regions is None else regions
+        return checks_from_regions(
+            task=self.task,
+            metric=self.metric,
+            threshold=self.configuration.threshold,
+            epsilon=self.configuration.epsilon,
+            report_schema_version=self.schema_version,
+            regions=selected,
+            max_loss_increase=max_loss_increase,
+            min_samples=min_samples,
+            names=names,
+        )
 
     def summary(self) -> str:
         """Render a readable plain-text report."""

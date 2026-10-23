@@ -1,38 +1,36 @@
 # ModelDiff-ML
 
-Your candidate model improved AUC from 0.84 to 0.85. But did it get better everywhere?
+[![PyPI](https://img.shields.io/pypi/v/modeldiff-ml.svg)](https://pypi.org/project/modeldiff-ml/)
+[![Python](https://img.shields.io/pypi/pyversions/modeldiff-ml.svg)](https://pypi.org/project/modeldiff-ml/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/ecklein/modeldiff-ml/blob/main/LICENSE)
 
-ModelDiff-ML compares two machine-learning models at the observation level and automatically
-discovers interpretable, statistically validated regions where the candidate behaves differently
-from the baseline. It is a small Python library built around NumPy, pandas, and SciPy—not an MLOps
-platform.
+Your candidate model improved AUC from 0.84 to 0.85. But did it get better for everyone?
+
+ModelDiff-ML compares two machine learning models one observation at a time. It finds readable
+regions where a candidate behaves differently from a baseline, then validates those regions on
+independent data. The result is a practical answer that an average metric cannot provide:
 
 ```text
-ordinary evaluation:  "The average metric improved."
-ModelDiff-ML:          "It improved overall, but regressed for high-x1, low-x2 observations."
+The candidate improved overall, but regressed for customers with high utilization and low income.
 ```
+
+The library is deliberately small. It works with fitted models or precomputed predictions, depends
+only on NumPy, pandas, and SciPy, and produces plain Python objects, JSON, and standalone HTML. It is
+not an MLOps platform and does not require a model registry, service, or database.
 
 ## Installation
 
-ModelDiff-ML requires Python 3.11 or newer. The distribution is named `modeldiff-ml`; its
-Python import package remains the concise `modeldiff`.
+ModelDiff-ML requires Python 3.11 or newer.
 
 ```bash
 pip install modeldiff-ml
 ```
 
-For local development:
+The package is published as `modeldiff-ml` and imported as `modeldiff`.
 
-```bash
-python -m venv .venv
-. .venv/bin/activate
-pip install -e '.[dev]'
-pytest
-```
+## Quick start
 
-## Quickstart
-
-ModelDiff-ML supports fitted sklearn-style models:
+Compare two fitted models on a shared evaluation set:
 
 ```python
 import modeldiff
@@ -48,17 +46,14 @@ report = modeldiff.compare(
 )
 
 print(report.summary())
-report.to_json("modeldiff-ml.json")
-report.to_html("modeldiff-ml.html")
+report.to_json("modeldiff-report.json")
+report.to_html("modeldiff-report.html")
 ```
 
-Binary classifiers must expose `predict_proba(X)` with two columns. ModelDiff-ML deliberately does not
-turn an estimator's uncalibrated `decision_function` into a probability. Regression estimators need
-only `predict(X)`.
+Binary classifiers must provide `predict_proba(X)` with two columns. ModelDiff-ML does not turn an
+uncalibrated `decision_function` into a probability. Regression estimators only need `predict(X)`.
 
-## Raw predictions
-
-The framework is model-agnostic when predictions are already available:
+If predictions already exist, use the model-independent API:
 
 ```python
 from modeldiff import ModelDiffConfig, compare_predictions
@@ -81,20 +76,53 @@ report = compare_predictions(
     config=config,
 )
 
-significant_regressions = report.regressions(significant_only=True)
+for region in report.regressions(significant_only=True):
+    print(region.description, region.validation_delta)
 ```
 
-`X` may be a pandas DataFrame or two-dimensional NumPy array. DataFrames produce more readable
-conditions. Arrays receive the names `x0`, `x1`, and so on.
+`X` can be a pandas DataFrame or a two-dimensional NumPy array. DataFrames produce more useful
+condition names. Array columns are named `x0`, `x1`, and so on.
 
-## Leakage-aware validation splits
+## What ModelDiff-ML reports
 
-Random splitting remains the default. For repeated entities or ordered data, select a strategy that
-keeps related observations out of both sides of the discovery/validation boundary:
+A comparison includes the overall metric change, prediction disagreement diagnostics, validated
+regression and improvement regions, confidence intervals, p-values, q-values adjusted for the false
+discovery rate, and warnings about small or unstable samples. Reports can be viewed in the terminal,
+serialized to JSON, or saved as a self-contained HTML file.
+
+Every delta follows the same convention:
+
+```text
+delta = candidate loss - baseline loss
+```
+
+Positive values mean the candidate is worse. Negative values mean it is better.
+
+| Task | Supported metrics | Region loss unit |
+| --- | --- | --- |
+| Binary classification | `log_loss`, `brier`, `accuracy` | Mean log loss, Brier loss, or misclassification rate |
+| Regression | `squared_error`, `mse`, `rmse`, `absolute_error`, `mae` | Mean squared error or mean absolute error |
+
+For `rmse`, the overall metric is square rooted after aggregation. Region discovery and saved checks
+continue to operate on per-observation squared error, so their deltas are expressed as mean squared
+error rather than a difference between aggregate RMSE values.
+
+## Choosing a validation split
+
+ModelDiff-ML searches for regions on one partition and evaluates them unchanged on another. A random
+split is the default, while three additional strategies help prevent leakage in structured data.
+
+| Strategy | Use it when | Required argument |
+| --- | --- | --- |
+| `random` | Rows are independent | None |
+| `group` | Several rows belong to the same customer, patient, device, or account | `groups=...` |
+| `time` | Validation should represent later observations | `time_values=...` |
+| `explicit` | A development and holdout partition already exists | `discovery_indices=...`, `validation_indices=...` |
+
+For example, a group split keeps every row for a customer in one partition:
 
 ```python
-# All rows for a customer remain in one partition.
-group_report = compare_predictions(
+report = compare_predictions(
     old_predictions,
     new_predictions,
     X,
@@ -104,9 +132,13 @@ group_report = compare_predictions(
     validation_strategy="group",
     groups=customer_ids,
 )
+```
 
-# Earlier timestamps are used for discovery and later timestamps for validation.
-time_report = compare_predictions(
+A chronological comparison uses earlier observations for discovery and later observations for
+validation:
+
+```python
+report = compare_predictions(
     old_predictions,
     new_predictions,
     X,
@@ -116,43 +148,29 @@ time_report = compare_predictions(
     validation_strategy="time",
     time_values=event_timestamps,
 )
-
-# Use an existing partition. Integer indices and boolean masks are both accepted.
-explicit_report = compare_predictions(
-    old_predictions,
-    new_predictions,
-    X,
-    y,
-    task="regression",
-    metric="mae",
-    validation_strategy="explicit",
-    discovery_indices=development_mask,
-    validation_indices=holdout_mask,
-)
 ```
 
-Group and time boundaries are chosen as close as possible to `discovery_fraction` without splitting
-a group or equal timestamp. Explicit partitions must assign every observation exactly once. Invalid
-or overlapping partitions raise `ValueError`; small or substantially unbalanced partitions add a
-report warning. `report.split` and serialized reports contain the strategy, actual fraction, counts,
-and strategy-specific audit metadata.
+Group and time boundaries stay as close as possible to `discovery_fraction` without splitting a
+group or equal timestamp. Explicit partitions must assign every observation exactly once. Split
+metadata is available through `report.split` and is included in serialized reports.
 
-## Saved regression checks
+## Turn discoveries into reusable checks
 
-Turn selected discoveries into fixed checks that can be applied to future model versions without
-running region discovery again:
+A discovered region can become a fixed regression check for future model releases. The saved check
+keeps the exact structured conditions, metric settings, allowed loss increase, minimum sample count,
+and enough provenance to trace it back to a comparison report.
 
 ```python
 checks = report.export_checks(
     regions=report.regressions(significant_only=True),
     max_loss_increase=0.01,
     min_samples=100,
-    names=["High-utilization applicants"],  # one optional name per region
+    names=["High utilization applicants"],
 )
-checks.to_json("model_checks.json")
+checks.to_json("model-checks.json")
 
 result = modeldiff.evaluate_checks(
-    checks="model_checks.json",
+    checks="model-checks.json",
     baseline_predictions=production_predictions,
     candidate_predictions=new_predictions,
     X=X_fresh,
@@ -160,14 +178,13 @@ result = modeldiff.evaluate_checks(
 )
 
 print(result.summary())
-result.to_json("check_results.json")
-result.to_html("check_results.html")
+result.to_json("check-results.json")
+result.to_html("check-results.html")
 ```
 
-Calling `report.export_checks()` without `regions` exports significant regression regions. Passing
-an explicit empty list creates a valid empty suite. Each saved check has a deterministic ID, readable
-name, exact structured conditions, an absolute `max_loss_increase`, and `min_samples`. To tune one
-policy after export without mutating the original suite:
+Omitting `regions` exports significant regression regions by default. Passing an empty list creates
+a valid empty suite. When `names` is provided, it must contain one name for each selected region.
+Check IDs are deterministic, and policy settings can be refined without mutating the original suite:
 
 ```python
 check_id = checks.checks[0].id
@@ -179,84 +196,32 @@ checks = checks.with_check_settings(
 )
 ```
 
-Evaluation statuses are `fail` when the observed mean loss increase is above the tolerance, `pass`
-when it is equal to or below the tolerance, and `insufficient_data` when support is below the saved
-minimum. Overall status is `fail` if any check fails, otherwise `insufficient_data` if any check lacks
-support, `no_checks` for an empty suite, and `pass` only when every check in a nonempty suite passes.
-Zero-support slices never pass, and unavailable loss values serialize as `null`.
+Each check receives `pass`, `fail`, or `insufficient_data`. A loss increase equal to the tolerance
+passes. A slice with fewer than `min_samples`, including a slice with zero matches, is never allowed
+to pass silently.
 
-Tolerance units are observation-level mean loss: accuracy uses misclassification-rate increase;
-`mae` uses mean absolute-error increase; and `mse`, `squared_error`, and `rmse` checks use mean
-squared-error increase. In particular, an RMSE check does **not** compare aggregate RMSE values.
-The suite preserves the classification threshold and log-loss epsilon used by the source report.
-Saved-suite and check-result JSON each use their own `1.0` schema, independently of comparison
-report schemas.
+| Overall status | Meaning |
+| --- | --- |
+| `pass` | The suite is not empty and every check passes |
+| `fail` | At least one check exceeds its tolerance |
+| `insufficient_data` | No check fails, but at least one lacks enough support |
+| `no_checks` | The suite is empty |
 
-These statuses are observed tolerance checks, not hypothesis-test conclusions. Evaluate against
-fresh data when possible: using discovery data is descriptive, and repeatedly tuning against the
-same evaluation set can overfit it. Exported checks cover only the selected findings, not every
-possible future regression. See [`examples/saved_checks_example.py`](examples/saved_checks_example.py)
-for a complete discover → save → fail/pass workflow.
+Check tolerances use the region loss units shown above. An accuracy tolerance is an increase in
+misclassification rate. An `rmse` tolerance is an increase in mean squared error. Classification
+thresholds and the numerical epsilon used for log loss are preserved in the saved suite.
 
-## Interpreting delta
+Saved checks are observed tolerance tests, not hypothesis tests. Fresh evaluation data is strongly
+recommended. Reusing discovery data is descriptive, while repeatedly tuning against the same
+evaluation set can overfit that set. Exported checks also represent selected findings rather than
+complete coverage of every regression a future model might introduce.
 
-ModelDiff-ML uses one convention everywhere:
+The complete workflow is available in
+[`examples/saved_checks_example.py`](https://github.com/ecklein/modeldiff-ml/blob/main/examples/saved_checks_example.py).
 
-```text
-delta_i = candidate_loss_i - baseline_loss_i
-```
+## Command line and CI
 
-- Positive delta: the candidate is worse.
-- Negative delta: the candidate is better.
-- Zero: equal loss.
-
-The supported classification losses are log loss, Brier loss (`"brier"`), and accuracy loss
-(`"accuracy"`). Classification reports also include accuracy, log loss, Brier score, and rank-based
-ROC AUC. Regression supports squared error (`"squared_error"` or `"mse"`), RMSE (`"rmse"`), and
-absolute error (`"absolute_error"` or `"mae"`).
-
-For RMSE, the overall metric is square-rooted after aggregation; region discovery still operates on
-observation-level squared error. For accuracy, the primary loss is misclassification rate while the
-aggregate metrics table also reports conventional accuracy.
-
-## How region discovery works
-
-1. ModelDiff-ML computes a loss difference for every observation.
-2. It deterministically divides the data into discovery and validation partitions.
-3. Numeric candidate conditions come from empirical quantiles. Categorical candidates use frequent
-   equality and inequality conditions.
-4. A from-scratch beam search builds conjunctions up to `max_depth`, scoring each as
-   `abs(mean_delta) * sqrt(region_fraction)` (with sign-aware variants for each direction).
-5. Highly overlapping regions are removed using Jaccard similarity.
-6. The exact selected conditions are applied unchanged to the validation partition.
-7. Validation effects receive percentile bootstrap confidence intervals and paired sign-flip
-   p-values. Benjamini–Hochberg correction produces q-values across all tested regions.
-
-This separation matters: searching for a threshold and reporting a p-value from those same rows
-would understate selection bias. ModelDiff-ML's independent holdout is a practical first defense.
-
-## Classification example
-
-[`examples/classification_example.py`](examples/classification_example.py) creates a candidate that
-is better overall but deliberately worse when `x1` is high and `x2` is low:
-
-```bash
-python examples/classification_example.py
-```
-
-This is the central ModelDiff-ML use case: aggregate improvement can hide a meaningful local
-regression. A generated standalone report is available at
-[`examples/classification_report.html`](examples/classification_report.html).
-
-## Regression example
-
-[`examples/regression_example.py`](examples/regression_example.py) compares two arrays of regression
-predictions and discovers a planted high-error slice.
-
-## CLI and CI
-
-The CLI reads precomputed predictions from CSV. Unless excluded, columns other than the target and
-prediction columns are features:
+The CLI works with CSV files containing features, the target, and both prediction columns:
 
 ```bash
 modeldiff-ml compare \
@@ -270,7 +235,8 @@ modeldiff-ml compare \
   --json report.json
 ```
 
-The CLI supports the same split strategies with `--validation-strategy` and a control column:
+Columns other than the target and prediction columns are treated as features. Repeat
+`--exclude COLUMN` to omit metadata. Group, time, and explicit partitions are also available:
 
 ```bash
 modeldiff-ml compare ... --validation-strategy group --group-column customer_id
@@ -278,75 +244,112 @@ modeldiff-ml compare ... --validation-strategy time --time-column event_time
 modeldiff-ml compare ... --validation-strategy explicit --split-column partition
 ```
 
-An explicit split column must contain only `discovery` and `validation`. Split-control columns are
-automatically excluded from the region-search features.
+An explicit partition column must contain only `discovery` and `validation`. Columns used to control
+a split are automatically excluded from region search.
 
-Use `--exclude COLUMN` repeatedly to omit non-feature columns. CI-oriented checks return exit code 1:
+The existing comparison command can fail a CI job for a significant region or excessive overall
+regression:
 
 ```bash
 modeldiff-ml compare ... --fail-on-significant-regression
 modeldiff-ml compare ... --max-overall-regression 0.01
 ```
 
-Export significant regression regions during comparison, then evaluate them on a fresh CSV:
+To save discovered regions and evaluate them later:
 
 ```bash
 modeldiff-ml compare \
   --data discovery.csv \
-  --target y --baseline-pred old --candidate-pred new \
-  --task regression --metric mae \
-  --export-checks model_checks.json \
+  --target y \
+  --baseline-pred old \
+  --candidate-pred new \
+  --task regression \
+  --metric mae \
+  --export-checks model-checks.json \
   --check-max-loss-increase 0.01 \
   --check-min-samples 100
 
 modeldiff-ml check \
-  --checks model_checks.json \
-  --data fresh_predictions.csv \
+  --checks model-checks.json \
+  --data fresh-predictions.csv \
   --target y \
   --baseline-pred production_prediction \
   --candidate-pred new_prediction \
-  --json check_results.json \
-  --html check_results.html
+  --json check-results.json \
+  --html check-results.html
 ```
 
-The `check` command infers task, metric, threshold, and epsilon from the suite. Its exit codes are:
+The `check` command reads the task, metric, classification threshold, and epsilon from the suite.
+Exit code `0` means every check in a nonempty suite passed. Exit code `1` covers a failed check,
+insufficient data, or an empty suite. Exit code `2` indicates invalid usage, inputs, or suite data.
+Requested reports are written before a valid evaluation returns exit code `1`.
 
-- `0`: a nonempty suite and every check passes.
-- `1`: at least one failure, insufficient-data check, or an empty suite.
-- `2`: invalid suite, invalid inputs, or command usage.
+## How discovery works
 
-For valid evaluations, requested JSON and HTML reports are written before exit code `1` is returned.
-The existing `compare` exit-code behavior is unchanged.
+ModelDiff-ML keeps selection and evaluation separate.
 
-Comparison JSON output has schema version `1.0`, contains no model objects, and is suitable for CI
-artifact processing.
+1. It computes a loss difference for every observation.
+2. It creates independent discovery and validation partitions.
+3. Numeric conditions come from empirical quantiles. Categorical conditions use frequent values.
+4. A bounded beam search builds short conjunctions and ranks them by effect and support.
+5. Highly overlapping regions are removed using Jaccard similarity.
+6. Selected conditions are applied unchanged to the validation partition.
+7. Validation effects receive percentile bootstrap intervals, paired sign flip p-values, and
+   Benjamini–Hochberg adjusted q-values.
 
-## Configuration
+This separation matters. Choosing a threshold and reporting a p-value from the same rows would
+understate selection bias. Independent validation is a practical first defense, although it does
+not turn exploratory subgroup discovery into a causal conclusion.
 
-`ModelDiffConfig` controls the discovery fraction, quantile grid, beam width, maximum depth, minimum
-and maximum support, overlap threshold, resampling counts, confidence and significance levels,
-classification threshold, numerical epsilon, and random seed. Defaults favor understandable output
-and avoid tiny slices. Missing feature values are never imputed; they evaluate as false for V1
-conditions.
+## Configuration and output schemas
 
-## Statistical scope and limitations
+`ModelDiffConfig` controls partition size, beam width, search depth, support limits, overlap
+deduplication, bootstrap and permutation counts, confidence and significance levels, classification
+threshold, numerical epsilon, and random seed. Defaults favor readable regions and avoid tiny
+slices. Missing feature values are never imputed; a missing value does not match a condition.
 
-Discovered subgroups are exploratory. Independent validation and FDR correction reduce false
-discoveries, but do not eliminate them. Results can still be unstable with small data, distribution
-shift, correlated repeated observations, or extensive repeated analyses by a human. A fresh final
-test set is appropriate before high-stakes deployment decisions.
+Comparison reports, saved check suites, and check evaluation results each use an independent `1.0`
+JSON schema. They contain no model objects, raw observations, or original sample IDs. Unavailable
+numeric results are represented as `null`, never `NaN` or infinity.
 
-V1 supports binary classification and regression only. It does not include multiclass evaluation,
-causal claims, fairness-specific analysis, distributed execution, SHAP, LLM evaluation, monitoring
-infrastructure, model registries, dashboards, or automated remediation.
+## Examples
 
-## Roadmap
+The
+[`classification example`](https://github.com/ecklein/modeldiff-ml/blob/main/examples/classification_example.py)
+plants a local classification regression inside a candidate that improves overall. The
+[`regression example`](https://github.com/ecklein/modeldiff-ml/blob/main/examples/regression_example.py)
+does the same for continuous predictions. The
+[`saved checks example`](https://github.com/ecklein/modeldiff-ml/blob/main/examples/saved_checks_example.py)
+discovers a region, saves it, and evaluates both a failing and a passing candidate on fresh data.
 
-- Multiclass observation-level losses
-- Cross-validated discovery and stability summaries
-- Pluggable, documented region scoring policies
-- Richer calibrated-score adapters
+## Scope and limitations
+
+ModelDiff-ML currently supports binary classification and regression. Discovered subgroups remain
+exploratory. Independent validation and false discovery rate correction reduce false findings but
+cannot eliminate them, especially with small data, distribution shift, correlated observations, or
+repeated human analysis. A fresh final test set is appropriate before high-stakes deployment.
+
+The project does not make causal claims or provide fairness certification. It also does not include
+multiclass evaluation, distributed execution, monitoring infrastructure, model registries,
+dashboards, or automated remediation.
+
+## Development
+
+```bash
+git clone https://github.com/ecklein/modeldiff-ml.git
+cd modeldiff-ml
+python -m venv .venv
+. .venv/bin/activate
+pip install -e '.[dev]'
+pytest
+ruff check .
+mypy src
+```
+
+Bug reports and focused contributions are welcome through
+[GitHub Issues](https://github.com/ecklein/modeldiff-ml/issues).
 
 ## License
 
-MIT
+ModelDiff-ML is available under the
+[MIT License](https://github.com/ecklein/modeldiff-ml/blob/main/LICENSE).

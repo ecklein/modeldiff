@@ -200,3 +200,59 @@ def test_check_help_documents_exit_code_contract() -> None:
     help_text = build_parser()._subparsers._group_actions[0].choices["check"].format_help()
     assert "Exit 0: all pass" in help_text
     assert "exit 2: invalid suite" in help_text
+
+
+def test_check_cli_writes_junit_for_confidence_gate(tmp_path: Path) -> None:
+    checks = tmp_path / "checks.json"
+    data = tmp_path / "data.csv"
+    junit = tmp_path / "checks.xml"
+    _suite().to_json(checks)
+    _write_data(data, np.full(6, 0.5))
+
+    exit_code = main(
+        _check_args(
+            checks,
+            data,
+            "--decision",
+            "confidence",
+            "--bootstrap",
+            "50",
+            "--junit",
+            str(junit),
+        )
+    )
+
+    assert exit_code == 1
+    assert '<testsuite name="modeldiff-ml saved checks"' in junit.read_text()
+
+
+def test_stability_cli_runs_stable_comparison(tmp_path: Path, monkeypatch: object) -> None:
+    import modeldiff.cli as cli
+
+    data = tmp_path / "data.csv"
+    _write_data(data, np.full(6, 0.5))
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        cli, "compare_stable_predictions", lambda *args, **kwargs: _report()
+    )
+
+    exit_code = main(
+        [
+            "stability",
+            "--data",
+            str(data),
+            "--target",
+            "y",
+            "--baseline-pred",
+            "old",
+            "--candidate-pred",
+            "new",
+            "--task",
+            "regression",
+            "--metric",
+            "mae",
+            "--n-resamples",
+            "2",
+        ]
+    )
+
+    assert exit_code == 0

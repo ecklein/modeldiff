@@ -10,7 +10,15 @@ from typing import Any
 
 import pandas as pd
 
-from modeldiff import CheckSuite, ModelDiffConfig, compare_predictions, evaluate_checks
+from modeldiff import (
+    CheckDecisionPolicy,
+    CheckSuite,
+    ModelDiffConfig,
+    StabilityConfig,
+    compare_predictions,
+    compare_stable_predictions,
+    evaluate_checks,
+)
 
 
 def _nonnegative_float(value: str) -> float:
@@ -76,6 +84,33 @@ def build_parser() -> argparse.ArgumentParser:
         help="minimum fresh-data support for exported checks (default: 30)",
     )
 
+    stability_parser = subparsers.add_parser(
+        "stability", help="discover regressions that survive repeated resampling"
+    )
+    stability_parser.add_argument("--data", required=True, type=Path)
+    stability_parser.add_argument("--target", required=True)
+    stability_parser.add_argument("--baseline-pred", required=True)
+    stability_parser.add_argument("--candidate-pred", required=True)
+    stability_parser.add_argument(
+        "--task", required=True, choices=["binary_classification", "regression"]
+    )
+    stability_parser.add_argument("--metric", required=True)
+    stability_parser.add_argument("--exclude", action="append", default=[])
+    stability_parser.add_argument("--html", type=Path)
+    stability_parser.add_argument("--json", type=Path)
+    stability_parser.add_argument("--known-checks", type=Path)
+    stability_parser.add_argument("--random-state", type=int, default=42)
+    stability_parser.add_argument("--n-resamples", type=_positive_int, default=30)
+    stability_parser.add_argument("--subsample-fraction", type=float, default=0.75)
+    stability_parser.add_argument("--min-selection-frequency", type=float, default=0.5)
+    stability_parser.add_argument(
+        "--validation-strategy", choices=["random", "group", "time", "explicit"], default="random"
+    )
+    stability_parser.add_argument("--group-column")
+    stability_parser.add_argument("--time-column")
+    stability_parser.add_argument("--split-column")
+    stability_parser.add_argument("--fail-on-significant-regression", action="store_true")
+
     check_parser = subparsers.add_parser(
         "check",
         help="evaluate a saved check suite (exit 0 pass, 1 fail/incomplete/empty, 2 error)",
@@ -92,6 +127,12 @@ def build_parser() -> argparse.ArgumentParser:
     check_parser.add_argument("--exclude", action="append", default=[])
     check_parser.add_argument("--html", type=Path)
     check_parser.add_argument("--json", type=Path)
+    check_parser.add_argument("--junit", type=Path)
+    check_parser.add_argument("--decision", choices=["observed", "confidence"])
+    check_parser.add_argument("--confidence-level", type=float, default=0.95)
+    check_parser.add_argument("--correction", choices=["bonferroni", "none"], default="bonferroni")
+    check_parser.add_argument("--bootstrap", type=_positive_int, default=2000)
+    check_parser.add_argument("--random-state", type=int, default=42)
     return parser
 
 
@@ -134,8 +175,8 @@ def _run_compare(args: argparse.Namespace, parser: argparse.ArgumentParser) -> i
                 )
             split_options["discovery_indices"] = labels.eq("discovery")
             split_options["validation_indices"] = labels.eq("validation")
-    excluded = {args.target, args.baseline_pred, args.candidate_pred} | control_columns | set(
-        args.exclude
+    excluded = (
+        {args.target, args.baseline_pred, args.candidate_pred} | control_columns | set(args.exclude)
     )
     features = data.drop(columns=list(excluded), errors="ignore")
     if features.shape[1] == 0:
@@ -181,19 +222,96 @@ def _run_check(args: argparse.Namespace) -> int:
         raise ValueError(f"missing columns: {', '.join(sorted(missing))}")
     excluded = required | set(args.exclude)
     features = data.drop(columns=list(excluded), errors="ignore")
+    policy = (
+        CheckDecisionPolicy(
+            method=args.decision,
+            confidence_level=args.confidence_level,
+            correction=args.correction,
+            n_bootstrap=args.bootstrap,
+            random_state=args.random_state,
+        )
+        if args.decision is not None
+        else None
+    )
     result = evaluate_checks(
         suite,
         data[args.baseline_pred],
         data[args.candidate_pred],
         features,
         data[args.target],
+        decision_policy=policy,
     )
     print(result.summary())
     if args.json:
         result.to_json(args.json)
     if args.html:
         result.to_html(args.html)
+    if args.junit:
+        result.to_junit_xml(args.junit)
     return 0 if result.overall_status == "pass" else 1
+
+
+def _run_stability(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
+    data = pd.read_csv(args.data)
+    required = {args.target, args.baseline_pred, args.candidate_pred}
+    control_columns: set[str] = set()
+    split_options: dict[str, Any] = {"validation_strategy": args.validation_strategy}
+    option = {
+        "group": ("group_column", args.group_column),
+        "time": ("time_column", args.time_column),
+        "explicit": ("split_column", args.split_column),
+    }.get(args.validation_strategy)
+    split_column: str | None = None
+    if option is not None:
+        option_name, column = option
+        if column is None:
+            parser.error(f"--{option_name.replace('_', '-')} is required")
+        required.add(column)
+        control_columns.add(column)
+        split_column = column
+    missing = required - set(data.columns)
+    if missing:
+        raise SystemExit(f"missing columns: {', '.join(sorted(missing))}")
+    if split_column is not None:
+        if args.validation_strategy == "group":
+            split_options["groups"] = data[split_column]
+        elif args.validation_strategy == "time":
+            split_options["time_values"] = data[split_column]
+        else:
+            labels = data[split_column].astype(str).str.lower()
+            unexpected = set(labels) - {"discovery", "validation"}
+            if unexpected:
+                parser.error("--split-column values must be 'discovery' or 'validation'")
+            split_options["discovery_indices"] = labels.eq("discovery")
+            split_options["validation_indices"] = labels.eq("validation")
+    excluded = required | control_columns | set(args.exclude)
+    features = data.drop(columns=list(excluded), errors="ignore")
+    if features.shape[1] == 0:
+        raise SystemExit("no feature columns remain after exclusions")
+    report = compare_stable_predictions(
+        data[args.baseline_pred],
+        data[args.candidate_pred],
+        features,
+        data[args.target],
+        args.task,
+        args.metric,
+        config=ModelDiffConfig(random_state=args.random_state),
+        stability_config=StabilityConfig(
+            n_resamples=args.n_resamples,
+            subsample_fraction=args.subsample_fraction,
+            min_selection_frequency=args.min_selection_frequency,
+            random_state=args.random_state,
+        ),
+        known_checks=args.known_checks,
+        **split_options,
+    )
+    print(report.summary())
+    if args.html:
+        report.to_html(args.html)
+    if args.json:
+        report.to_json(args.json)
+    failed = args.fail_on_significant_regression and bool(report.regressions(significant_only=True))
+    return 1 if failed else 0
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -202,6 +320,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.command == "compare":
         return _run_compare(args, parser)
+    if args.command == "stability":
+        return _run_stability(args, parser)
     try:
         return _run_check(args)
     except (ValueError, TypeError, OSError, UnicodeError, pd.errors.ParserError) as error:

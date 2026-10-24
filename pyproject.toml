@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "modeldiff-ml"
-version = "0.3.0"
+version = "0.4.0"
 description = "Behavioral regression testing for machine-learning models"
 readme = "README.md"
 license = {file = "LICENSE"}

@@ -55,3 +55,35 @@ class ModelDiffConfig:
         data = asdict(self)
         data["quantiles"] = list(self.quantiles)
         return data
+
+
+@dataclass(frozen=True)
+class StabilityConfig:
+    """Controls repeated discovery and stable-region selection.
+
+    Resampling is confined to the discovery partition. The untouched validation
+    partition is used once, after stable regions have been selected.
+    """
+
+    n_resamples: int = 30
+    subsample_fraction: float = 0.75
+    min_selection_frequency: float = 0.50
+    cluster_jaccard_threshold: float = 0.70
+    known_coverage_threshold: float = 0.80
+    random_state: int = 42
+
+    def __post_init__(self) -> None:
+        if self.n_resamples < 2:
+            raise ValueError("n_resamples must be at least 2")
+        if not 0 < self.subsample_fraction <= 1:
+            raise ValueError("subsample_fraction must be between 0 and 1")
+        if not 0 < self.min_selection_frequency <= 1:
+            raise ValueError("min_selection_frequency must be between 0 and 1")
+        if not 0 <= self.cluster_jaccard_threshold <= 1:
+            raise ValueError("cluster_jaccard_threshold must be between 0 and 1")
+        if not 0 <= self.known_coverage_threshold <= 1:
+            raise ValueError("known_coverage_threshold must be between 0 and 1")
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return a JSON-compatible configuration mapping."""
+        return asdict(self)

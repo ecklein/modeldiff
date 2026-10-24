@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
-    from modeldiff.result import ModelDiffReport, RegionResult
+    from modeldiff.result import ModelDiffReport, RegionResult, StableRegionResult
 
 
 def _format_number(value: float) -> str:
@@ -18,6 +18,7 @@ def _region_lines(regions: list[RegionResult], total: int) -> list[str]:
     lines: list[str] = []
     for number, region in enumerate(regions, 1):
         marker = "significant" if region.significant else "not significant"
+        stable = cast("StableRegionResult", region)
         lines.extend(
             [
                 f"{number}. {region.description}",
@@ -29,6 +30,15 @@ def _region_lines(regions: list[RegionResult], total: int) -> list[str]:
                 f"95% CI: [{region.confidence_interval[0]:+.4f}, "
                 f"{region.confidence_interval[1]:+.4f}]",
                 f"   p={region.p_value:.4g}  q={region.q_value:.4g} ({marker})",
+                *(
+                    [
+                        f"   Stability: {stable.selection_frequency:.1%} "
+                        f"({stable.selected_resamples}/{stable.total_resamples} resamples); "
+                        f"triage={stable.triage}"
+                    ]
+                    if hasattr(region, "selection_frequency")
+                    else []
+                ),
                 "",
             ]
         )

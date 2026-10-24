@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 from html import escape
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
-    from modeldiff.result import ModelDiffReport, RegionResult
+    from modeldiff.result import ModelDiffReport, RegionResult, StableRegionResult
 
 
 def _display(value: Any) -> str:
@@ -24,6 +24,13 @@ def _region_table(regions: list[RegionResult]) -> str:
     for region in regions:
         low, high = region.confidence_interval
         status = '<span class="sig">yes</span>' if region.significant else "no"
+        stable_region = cast("StableRegionResult", region)
+        stability_cells = (
+            f"<td>{stable_region.selection_frequency:.1%}</td>"
+            f"<td>{escape(stable_region.triage)}</td>"
+            if hasattr(region, "selection_frequency")
+            else ""
+        )
         rows.append(
             "<tr>"
             f"<td>{escape(region.description)}</td>"
@@ -34,12 +41,16 @@ def _region_table(regions: list[RegionResult]) -> str:
             f"{region.validation_delta:+.4f}</td>"
             f"<td>[{low:+.4f}, {high:+.4f}]</td>"
             f"<td>{region.p_value:.4g}</td><td>{region.q_value:.4g}</td><td>{status}</td>"
+            f"{stability_cells}"
             "</tr>"
         )
+    stable = hasattr(regions[0], "selection_frequency")
     return (
         '<div class="table-wrap"><table><thead><tr><th>Region</th><th>Validation support</th>'
         "<th>Baseline loss</th><th>Candidate loss</th><th>Delta</th><th>CI</th>"
-        "<th>p</th><th>q</th><th>Significant</th></tr></thead><tbody>"
+        "<th>p</th><th>q</th><th>Significant</th>"
+        + ("<th>Stability</th><th>Triage</th>" if stable else "")
+        + "</tr></thead><tbody>"
         + "".join(rows)
         + "</tbody></table></div>"
     )

@@ -27,7 +27,10 @@ def render_check_console(result: CheckEvaluationResult) -> str:
         f"Loss unit: {result.loss_unit}",
         f"Checks: {len(result.outcomes)} total, {result.passed_count} passed, "
         f"{result.failed_count} failed, "
+        f"{result.inconclusive_count} inconclusive, "
         f"{result.insufficient_data_count} insufficient data",
+        f"Decision policy: {result.decision_policy.method} "
+        f"({result.decision_policy.correction} correction)",
         "",
     ]
     if not result.outcomes:
@@ -44,6 +47,15 @@ def render_check_console(result: CheckEvaluationResult) -> str:
                 f"Candidate loss: {_number(outcome.candidate_mean_loss)}",
                 f"  Delta: {_number(outcome.loss_delta, signed=True)}  "
                 f"Tolerance: {outcome.max_loss_increase:.6g}",
+                *(
+                    [
+                        f"  Confidence interval: "
+                        f"[{outcome.confidence_interval[0]:+.6g}, "
+                        f"{outcome.confidence_interval[1]:+.6g}]"
+                    ]
+                    if outcome.confidence_interval is not None
+                    else []
+                ),
                 f"  {outcome.explanation}",
                 "",
             ]
@@ -67,6 +79,7 @@ def render_check_html(result: CheckEvaluationResult) -> str:
             f"<td>{_number(outcome.baseline_mean_loss)}</td>"
             f"<td>{_number(outcome.candidate_mean_loss)}</td>"
             f"<td>{_number(outcome.loss_delta, signed=True)}</td>"
+            f"<td>{escape(_number(outcome.confidence_interval[0], signed=True) + ' to ' + _number(outcome.confidence_interval[1], signed=True)) if outcome.confidence_interval is not None else 'n/a'}</td>"
             f"<td>{outcome.max_loss_increase:.6g}</td>"
             f"<td>{escape(outcome.explanation)}</td>"
             "</tr>"
@@ -76,7 +89,7 @@ def render_check_html(result: CheckEvaluationResult) -> str:
         if not rows
         else '<div class="table-wrap"><table><thead><tr><th>Status</th><th>Check</th>'
         "<th>Fixed region</th><th>Support</th><th>Baseline loss</th>"
-        "<th>Candidate loss</th><th>Delta</th><th>Tolerance</th><th>Explanation</th>"
+        "<th>Candidate loss</th><th>Delta</th><th>Confidence interval</th><th>Tolerance</th><th>Explanation</th>"
         f"</tr></thead><tbody>{''.join(rows)}</tbody></table></div>"
     )
     return f"""<!doctype html>
@@ -88,15 +101,16 @@ main{{max-width:1300px;margin:40px auto;padding:0 22px}} h1{{font-size:32px;marg
 .cards{{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin:24px 0}}
 .card{{background:#fff;border:1px solid var(--line);border-radius:10px;padding:18px}} .label{{color:var(--muted);font-size:12px;text-transform:uppercase}} .value{{font-size:24px;font-weight:650}}
 .table-wrap{{overflow-x:auto;border:1px solid var(--line);border-radius:8px}} table{{width:100%;border-collapse:collapse;background:#fff}} th,td{{text-align:left;vertical-align:top;padding:10px 12px;border-bottom:1px solid var(--line)}} th{{font-size:12px;color:var(--muted);text-transform:uppercase}}
-.status{{font-weight:700}} .status.pass{{color:var(--good)}} .status.fail{{color:var(--bad)}} .status.insufficient_data{{color:var(--warn)}}
+.status{{font-weight:700}} .status.pass{{color:var(--good)}} .status.fail{{color:var(--bad)}} .status.inconclusive,.status.insufficient_data{{color:var(--warn)}}
 </style></head><body><main><h1>ModelDiff-ML Saved Checks</h1>
 <p class="sub">Fixed-condition observed tolerance checks · result schema {escape(result.schema_version)}</p>
 <div class="cards"><div class="card"><div class="label">Overall status</div><div class="value">{escape(result.overall_status)}</div></div>
 <div class="card"><div class="label">Samples</div><div class="value">{result.sample_count:,}</div></div>
 <div class="card"><div class="label">Passed</div><div class="value">{result.passed_count}</div></div>
 <div class="card"><div class="label">Failed</div><div class="value">{result.failed_count}</div></div>
+<div class="card"><div class="label">Inconclusive</div><div class="value">{result.inconclusive_count}</div></div>
 <div class="card"><div class="label">Insufficient data</div><div class="value">{result.insufficient_data_count}</div></div></div>
 <p>Task: <strong>{escape(result.task)}</strong> · Metric: <strong>{escape(result.metric)}</strong> · Loss unit: <strong>{escape(result.loss_unit)}</strong></p>
 {table}
-<p class="sub">Statuses compare observed mean loss deltas with configured tolerances. They are not statistical hypothesis-test conclusions.</p>
+<p class="sub">Decision method: {escape(result.decision_policy.method)} · correction: {escape(result.decision_policy.correction)}.</p>
 </main></body></html>"""

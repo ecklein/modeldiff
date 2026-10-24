@@ -107,6 +107,46 @@ For `rmse`, the overall metric is square rooted after aggregation. Region discov
 continue to operate on per-observation squared error, so their deltas are expressed as mean squared
 error rather than a difference between aggregate RMSE values.
 
+## Find regressions that survive resampling
+
+One discovery split can still produce a slice that depends on a lucky threshold or a handful of
+rows. The stability API repeats region discovery on subsamples of the discovery partition, groups
+similar regions by their membership, and keeps only those selected often enough. It then evaluates
+the surviving conditions once on the untouched validation partition.
+
+```python
+from modeldiff import ModelDiffConfig, StabilityConfig, compare_stable_predictions
+
+report = compare_stable_predictions(
+    old_predictions,
+    new_predictions,
+    X,
+    y,
+    task="regression",
+    metric="mae",
+    config=ModelDiffConfig(random_state=42),
+    stability_config=StabilityConfig(
+        n_resamples=30,
+        subsample_fraction=0.75,
+        min_selection_frequency=0.50,
+        random_state=42,
+    ),
+)
+
+for region in report.regressions(significant_only=True):
+    print(region.description, region.selection_frequency, region.validation_delta)
+```
+
+Each stable region records its selection frequency, sign consistency, similarity to other members
+of its cluster, and the ranges of discovery effects and support across resamples. Random and
+explicit splits resample rows, group splits resample whole groups, and time splits use contiguous
+blocks. In every case, resampling stays entirely inside discovery data.
+
+Pass an existing `CheckSuite` through `known_checks=` to distinguish newly discovered regressions
+from behavior the project already tracks. A stable regression is labeled `known` when saved checks
+cover at least 80% of its validation membership, `partially_covered` when coverage is lower but
+nonzero, and `new` when there is no overlap. Without a suite, triage remains `unclassified`.
+
 ## Choosing a validation split
 
 ModelDiff-ML searches for regions on one partition and evaluates them unchanged on another. A random
@@ -196,14 +236,15 @@ checks = checks.with_check_settings(
 )
 ```
 
-Each check receives `pass`, `fail`, or `insufficient_data`. A loss increase equal to the tolerance
-passes. A slice with fewer than `min_samples`, including a slice with zero matches, is never allowed
-to pass silently.
+Observed checks receive `pass`, `fail`, or `insufficient_data`. A loss increase equal to the
+tolerance passes. A slice with fewer than `min_samples`, including a slice with zero matches, is
+never allowed to pass silently.
 
 | Overall status | Meaning |
 | --- | --- |
 | `pass` | The suite is not empty and every check passes |
 | `fail` | At least one check exceeds its tolerance |
+| `inconclusive` | No check fails, but a confidence interval crosses its tolerance |
 | `insufficient_data` | No check fails, but at least one lacks enough support |
 | `no_checks` | The suite is empty |
 
@@ -211,10 +252,34 @@ Check tolerances use the region loss units shown above. An accuracy tolerance is
 misclassification rate. An `rmse` tolerance is an increase in mean squared error. Classification
 thresholds and the numerical epsilon used for log loss are preserved in the saved suite.
 
-Saved checks are observed tolerance tests, not hypothesis tests. Fresh evaluation data is strongly
-recommended. Reusing discovery data is descriptive, while repeatedly tuning against the same
-evaluation set can overfit that set. Exported checks also represent selected findings rather than
-complete coverage of every regression a future model might introduce.
+Saved checks are release policies, not causal or hypothesis-test conclusions. Fresh evaluation data
+is strongly recommended. Reusing discovery data is descriptive, while repeatedly tuning against
+the same evaluation set can overfit that set. Exported checks also represent selected findings
+rather than complete coverage of every regression a future model might introduce.
+
+For uncertainty-aware release gates, use a confidence decision policy. A check passes only when its
+entire interval is within tolerance, fails only when the entire interval exceeds tolerance, and is
+otherwise inconclusive. Bonferroni correction is the default so the requested confidence level
+applies to the suite rather than to each check in isolation.
+
+```python
+from modeldiff import CheckDecisionPolicy
+
+result = modeldiff.evaluate_checks(
+    checks,
+    production_predictions,
+    new_predictions,
+    X_fresh,
+    y_fresh,
+    decision_policy=CheckDecisionPolicy(
+        method="confidence",
+        confidence_level=0.95,
+        correction="bonferroni",
+    ),
+)
+
+result.to_junit_xml("modeldiff-checks.xml")
+```
 
 The complete workflow is available in
 [`examples/saved_checks_example.py`](https://github.com/ecklein/modeldiff-ml/blob/main/examples/saved_checks_example.py).
@@ -255,6 +320,23 @@ modeldiff-ml compare ... --fail-on-significant-regression
 modeldiff-ml compare ... --max-overall-regression 0.01
 ```
 
+Stable discovery has its own command and accepts the same split controls:
+
+```bash
+modeldiff-ml stability \
+  --data validation.csv \
+  --target y \
+  --baseline-pred old \
+  --candidate-pred new \
+  --task regression \
+  --metric mae \
+  --n-resamples 30 \
+  --min-selection-frequency 0.5 \
+  --known-checks model-checks.json \
+  --json stability-report.json \
+  --html stability-report.html
+```
+
 To save discovered regions and evaluate them later:
 
 ```bash
@@ -275,14 +357,18 @@ modeldiff-ml check \
   --target y \
   --baseline-pred production_prediction \
   --candidate-pred new_prediction \
+  --decision confidence \
+  --correction bonferroni \
+  --junit check-results.xml \
   --json check-results.json \
   --html check-results.html
 ```
 
 The `check` command reads the task, metric, classification threshold, and epsilon from the suite.
-Exit code `0` means every check in a nonempty suite passed. Exit code `1` covers a failed check,
-insufficient data, or an empty suite. Exit code `2` indicates invalid usage, inputs, or suite data.
-Requested reports are written before a valid evaluation returns exit code `1`.
+Exit code `0` means every check in a nonempty suite passed. Exit code `1` covers a failed or
+inconclusive check, insufficient data, or an empty suite. Exit code `2` indicates invalid usage,
+inputs, or suite data. Requested reports are written before a valid evaluation returns exit code
+`1`.
 
 ## How discovery works
 
@@ -308,9 +394,11 @@ deduplication, bootstrap and permutation counts, confidence and significance lev
 threshold, numerical epsilon, and random seed. Defaults favor readable regions and avoid tiny
 slices. Missing feature values are never imputed; a missing value does not match a condition.
 
-Comparison reports, saved check suites, and check evaluation results each use an independent `1.0`
-JSON schema. They contain no model objects, raw observations, or original sample IDs. Unavailable
-numeric results are represented as `null`, never `NaN` or infinity.
+Standard comparison reports retain schema `1.0`. Stability reports, newly saved check suites, and
+check evaluation results use schema `1.1`. Version `1.0` check suites remain loadable and use the
+observed decision policy. Serialized artifacts contain no model objects, raw observations, or
+original sample IDs. Unavailable numeric results are represented as `null`, never `NaN` or
+infinity.
 
 ## Examples
 

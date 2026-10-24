@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 from modeldiff.analysis.regions import Condition
-from modeldiff.config import ModelDiffConfig
+from modeldiff.config import ModelDiffConfig, StabilityConfig
 
 if TYPE_CHECKING:
     from modeldiff.checks import CheckSuite
@@ -71,6 +71,40 @@ class RegionResult:
             "candidate_mean_loss": self.candidate_mean_loss,
             "significant": self.significant,
         }
+
+
+@dataclass(frozen=True)
+class StableRegionResult(RegionResult):
+    """A validated region that repeatedly appeared during discovery resampling."""
+
+    selection_frequency: float = 0.0
+    selected_resamples: int = 0
+    total_resamples: int = 0
+    sign_consistency: float = 0.0
+    mean_cluster_similarity: float = 0.0
+    discovery_delta_range: tuple[float, float] = (0.0, 0.0)
+    discovery_support_range: tuple[int, int] = (0, 0)
+    triage: str = "unclassified"
+    known_coverage: float = 0.0
+    matched_check_ids: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        data = super().to_dict()
+        data["stability"] = {
+            "selection_frequency": self.selection_frequency,
+            "selected_resamples": self.selected_resamples,
+            "total_resamples": self.total_resamples,
+            "sign_consistency": self.sign_consistency,
+            "mean_cluster_similarity": self.mean_cluster_similarity,
+            "discovery_delta_range": list(self.discovery_delta_range),
+            "discovery_support_range": list(self.discovery_support_range),
+        }
+        data["triage"] = {
+            "status": self.triage,
+            "known_coverage": self.known_coverage,
+            "matched_check_ids": list(self.matched_check_ids),
+        }
+        return data
 
 
 @dataclass
@@ -175,3 +209,24 @@ class ModelDiffReport:
         if path is not None:
             Path(path).write_text(rendered, encoding="utf-8")
         return rendered
+
+
+@dataclass
+class StabilityReport(ModelDiffReport):
+    """Comparison report whose regions passed repeated-discovery selection."""
+
+    stability_configuration: StabilityConfig = field(default_factory=StabilityConfig)
+    schema_version: str = "1.1"
+
+    def to_dict(self) -> dict[str, Any]:
+        data = super().to_dict()
+        data["analysis"] = "stability_selection"
+        data["stability_configuration"] = self.stability_configuration.to_dict()
+        data["triage_counts"] = {
+            status: sum(
+                isinstance(region, StableRegionResult) and region.triage == status
+                for region in self.regression_regions
+            )
+            for status in ("new", "known", "partially_covered", "unclassified")
+        }
+        return data

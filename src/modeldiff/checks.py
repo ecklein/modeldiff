@@ -7,9 +7,10 @@ import json
 import math
 import numbers
 from collections.abc import Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, cast
+from xml.etree import ElementTree
 
 import numpy as np
 import pandas as pd
@@ -21,12 +22,49 @@ from modeldiff.utils import VALID_METRICS, VALID_TASKS, python_value, validate_i
 if TYPE_CHECKING:
     from modeldiff.result import RegionResult
 
-CHECK_SUITE_SCHEMA_VERSION = "1.0"
-CHECK_RESULT_SCHEMA_VERSION = "1.0"
+CHECK_SUITE_SCHEMA_VERSION = "1.1"
+CHECK_RESULT_SCHEMA_VERSION = "1.1"
+SUPPORTED_CHECK_SUITE_SCHEMA_VERSIONS = {"1.0", "1.1"}
 SUPPORTED_OPERATORS = {"<=", ">", "==", "!="}
 
-CheckStatus = Literal["pass", "fail", "insufficient_data"]
-OverallCheckStatus = Literal["pass", "fail", "insufficient_data", "no_checks"]
+CheckStatus = Literal["pass", "fail", "inconclusive", "insufficient_data"]
+OverallCheckStatus = Literal["pass", "fail", "inconclusive", "insufficient_data", "no_checks"]
+
+
+@dataclass(frozen=True)
+class CheckDecisionPolicy:
+    """Choose observed-delta or confidence-interval release decisions."""
+
+    method: Literal["observed", "confidence"] = "observed"
+    confidence_level: float = 0.95
+    correction: Literal["bonferroni", "none"] = "bonferroni"
+    n_bootstrap: int = 2000
+    random_state: int = 42
+
+    def __post_init__(self) -> None:
+        if self.method not in {"observed", "confidence"}:
+            raise ValueError("decision method must be 'observed' or 'confidence'")
+        if not 0 < self.confidence_level < 1:
+            raise ValueError("confidence_level must be between 0 and 1")
+        if self.correction not in {"bonferroni", "none"}:
+            raise ValueError("correction must be 'bonferroni' or 'none'")
+        if self.n_bootstrap < 1:
+            raise ValueError("n_bootstrap must be positive")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "method": self.method,
+            "confidence_level": self.confidence_level,
+            "correction": self.correction,
+            "n_bootstrap": self.n_bootstrap,
+            "random_state": self.random_state,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Any) -> CheckDecisionPolicy:
+        if not isinstance(data, dict):
+            raise ValueError("decision_policy must be an object")
+        return cls(**data)
 
 
 def loss_unit(task: str, metric: str) -> str:
@@ -228,11 +266,16 @@ class CheckSuite:
     checks: tuple[SavedCheck, ...] = ()
     threshold: float = 0.5
     epsilon: float = 1e-15
+    decision_policy: CheckDecisionPolicy = field(default_factory=CheckDecisionPolicy)
     schema_version: str = CHECK_SUITE_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
-        if self.schema_version != CHECK_SUITE_SCHEMA_VERSION:
+        if self.schema_version not in SUPPORTED_CHECK_SUITE_SCHEMA_VERSIONS:
             raise ValueError(f"unsupported check-suite schema version: {self.schema_version!r}")
+        if not isinstance(self.decision_policy, CheckDecisionPolicy):
+            raise ValueError("decision_policy must be a CheckDecisionPolicy")
+        if self.schema_version == "1.0" and self.decision_policy != CheckDecisionPolicy():
+            raise ValueError("schema 1.0 suites cannot store a non-default decision policy")
         if not isinstance(self.task, str) or self.task not in VALID_TASKS:
             raise ValueError(f"task must be one of {sorted(VALID_TASKS)}")
         if not isinstance(self.metric, str) or self.metric not in VALID_METRICS[self.task]:
@@ -277,15 +320,24 @@ class CheckSuite:
         )
         return replace(self, checks=updated)
 
+    def with_decision_policy(self, policy: CheckDecisionPolicy) -> CheckSuite:
+        """Return a schema 1.1 suite with a persisted release decision policy."""
+        if not isinstance(policy, CheckDecisionPolicy):
+            raise ValueError("policy must be a CheckDecisionPolicy")
+        return replace(self, decision_policy=policy, schema_version=CHECK_SUITE_SCHEMA_VERSION)
+
     def to_dict(self) -> dict[str, Any]:
         """Return the versioned JSON-compatible suite mapping."""
-        return {
+        data = {
             "schema_version": self.schema_version,
             "task": self.task,
             "metric": self.metric,
             "metric_settings": {"threshold": self.threshold, "epsilon": self.epsilon},
             "checks": [check.to_dict() for check in self.checks],
         }
+        if self.schema_version != "1.0":
+            data["decision_policy"] = self.decision_policy.to_dict()
+        return data
 
     def to_json(self, path: str | Path | None = None, *, indent: int = 2) -> str:
         """Serialize the suite and optionally write it to a file."""
@@ -314,6 +366,9 @@ class CheckSuite:
             checks=tuple(SavedCheck.from_dict(item) for item in data["checks"]),
             threshold=settings["threshold"],
             epsilon=settings["epsilon"],
+            decision_policy=CheckDecisionPolicy.from_dict(data["decision_policy"])
+            if "decision_policy" in data
+            else CheckDecisionPolicy(),
             schema_version=data["schema_version"],
         )
 
@@ -348,6 +403,9 @@ class CheckOutcome:
     min_samples: int
     status: CheckStatus
     explanation: str
+    confidence_interval: tuple[float, float] | None = None
+    decision_method: str = "observed"
+    simultaneous_confidence_level: float | None = None
 
     @property
     def id(self) -> str:
@@ -373,6 +431,11 @@ class CheckOutcome:
             "min_samples": self.min_samples,
             "status": self.status,
             "explanation": self.explanation,
+            "confidence_interval": (
+                list(self.confidence_interval) if self.confidence_interval is not None else None
+            ),
+            "decision_method": self.decision_method,
+            "simultaneous_confidence_level": self.simultaneous_confidence_level,
         }
 
 
@@ -387,6 +450,7 @@ class CheckEvaluationResult:
     suite_schema_version: str
     threshold: float
     epsilon: float
+    decision_policy: CheckDecisionPolicy = field(default_factory=CheckDecisionPolicy)
     schema_version: str = CHECK_RESULT_SCHEMA_VERSION
 
     @property
@@ -402,6 +466,10 @@ class CheckEvaluationResult:
         return sum(outcome.status == "insufficient_data" for outcome in self.outcomes)
 
     @property
+    def inconclusive_count(self) -> int:
+        return sum(outcome.status == "inconclusive" for outcome in self.outcomes)
+
+    @property
     def any_evaluated(self) -> bool:
         return any(outcome.status != "insufficient_data" for outcome in self.outcomes)
 
@@ -411,6 +479,8 @@ class CheckEvaluationResult:
             return "no_checks"
         if self.failed_count:
             return "fail"
+        if self.inconclusive_count:
+            return "inconclusive"
         if self.insufficient_data_count:
             return "insufficient_data"
         return "pass"
@@ -434,6 +504,7 @@ class CheckEvaluationResult:
             "metric": self.metric,
             "loss_unit": self.loss_unit,
             "metric_settings": {"threshold": self.threshold, "epsilon": self.epsilon},
+            "decision_policy": self.decision_policy.to_dict(),
             "sample_count": self.sample_count,
             "overall_status": self.overall_status,
             "any_checks_evaluated": self.any_evaluated,
@@ -441,6 +512,7 @@ class CheckEvaluationResult:
                 "total": len(self.outcomes),
                 "passed": self.passed_count,
                 "failed": self.failed_count,
+                "inconclusive": self.inconclusive_count,
                 "insufficient_data": self.insufficient_data_count,
             },
             "checks": [outcome.to_dict() for outcome in self.outcomes],
@@ -450,6 +522,32 @@ class CheckEvaluationResult:
     def to_json(self, path: str | Path | None = None, *, indent: int = 2) -> str:
         """Serialize the result and optionally write it to a file."""
         rendered = json.dumps(self.to_dict(), indent=indent, sort_keys=True, allow_nan=False)
+        if path is not None:
+            Path(path).write_text(rendered + "\n", encoding="utf-8")
+        return rendered
+
+    def to_junit_xml(self, path: str | Path | None = None) -> str:
+        """Serialize outcomes as CI-compatible JUnit XML."""
+        suite = ElementTree.Element(
+            "testsuite",
+            name="modeldiff-ml saved checks",
+            tests=str(len(self.outcomes)),
+            failures=str(self.failed_count),
+            skipped=str(self.inconclusive_count + self.insufficient_data_count),
+        )
+        for outcome in self.outcomes:
+            case = ElementTree.SubElement(
+                suite,
+                "testcase",
+                classname="modeldiff.saved_checks",
+                name=f"{outcome.name} ({outcome.check_id})",
+            )
+            if outcome.status == "fail":
+                node = ElementTree.SubElement(case, "failure", message=outcome.explanation)
+                node.text = outcome.description
+            elif outcome.status in {"inconclusive", "insufficient_data"}:
+                ElementTree.SubElement(case, "skipped", message=outcome.explanation)
+        rendered = ElementTree.tostring(suite, encoding="unicode")
         if path is not None:
             Path(path).write_text(rendered + "\n", encoding="utf-8")
         return rendered
@@ -518,15 +616,30 @@ def _validate_feature_schema(frame: pd.DataFrame, check: SavedCheck) -> None:
             )
 
 
+def _check_mask(frame: pd.DataFrame, check: SavedCheck) -> np.ndarray:
+    mask = np.ones(len(frame), dtype=bool)
+    for condition in check.conditions:
+        mask &= condition.apply(frame)
+    return mask
+
+
 def evaluate_checks(
     checks: CheckSuite | str | Path,
     baseline_predictions: Any,
     candidate_predictions: Any,
     X: Any,
     y: Any,
+    *,
+    decision_policy: CheckDecisionPolicy | None = None,
 ) -> CheckEvaluationResult:
-    """Evaluate fixed saved conditions without discovery, optimization, or splitting."""
+    """Evaluate fixed saved conditions without discovery or optimization.
+
+    Confidence decisions fail only when the entire interval exceeds tolerance,
+    pass only when the entire interval is within tolerance, and otherwise return
+    ``inconclusive``. Bonferroni correction provides simultaneous suite coverage.
+    """
     suite = checks if isinstance(checks, CheckSuite) else CheckSuite.load(checks)
+    policy = decision_policy or suite.decision_policy
     frame, target, baseline, candidate = validate_inputs(
         X,
         y,
@@ -551,12 +664,19 @@ def evaluate_checks(
         threshold=suite.threshold,
         epsilon=suite.epsilon,
     )
-    outcomes: list[CheckOutcome] = []
     for check in suite.checks:
         _validate_feature_schema(frame, check)
-        mask = np.ones(len(frame), dtype=bool)
-        for condition in check.conditions:
-            mask &= condition.apply(frame)
+    evaluated_count = sum(
+        int(_check_mask(frame, check).sum()) >= check.min_samples for check in suite.checks
+    )
+    simultaneous_level = policy.confidence_level
+    interval_level = policy.confidence_level
+    if policy.method == "confidence" and policy.correction == "bonferroni" and evaluated_count:
+        interval_level = 1 - (1 - policy.confidence_level) / evaluated_count
+    rng = np.random.default_rng(policy.random_state)
+    outcomes: list[CheckOutcome] = []
+    for check in suite.checks:
+        mask = _check_mask(frame, check)
         support = int(mask.sum())
         fraction = support / len(frame)
         if support < check.min_samples:
@@ -577,13 +697,52 @@ def evaluate_checks(
                         f"Matched {support} observations; at least "
                         f"{check.min_samples} are required."
                     ),
+                    decision_method=policy.method,
+                    simultaneous_confidence_level=(
+                        simultaneous_level if policy.method == "confidence" else None
+                    ),
                 )
             )
             continue
         baseline_mean = float(np.mean(baseline_loss[mask]))
         candidate_mean = float(np.mean(candidate_loss[mask]))
         delta = candidate_mean - baseline_mean
-        failed = delta > check.max_loss_increase
+        interval: tuple[float, float] | None = None
+        if policy.method == "confidence":
+            from modeldiff.statistics import bootstrap_mean_ci
+
+            interval = bootstrap_mean_ci(
+                candidate_loss[mask] - baseline_loss[mask],
+                n_bootstrap=policy.n_bootstrap,
+                confidence_level=interval_level,
+                random_state=rng,
+            )
+            if interval[0] > check.max_loss_increase:
+                status: CheckStatus = "fail"
+                explanation = (
+                    f"Confidence interval [{interval[0]:.6g}, {interval[1]:.6g}] is entirely "
+                    f"above tolerance {check.max_loss_increase:.6g}."
+                )
+            elif interval[1] <= check.max_loss_increase:
+                status = "pass"
+                explanation = (
+                    f"Confidence interval [{interval[0]:.6g}, {interval[1]:.6g}] is entirely "
+                    f"within tolerance {check.max_loss_increase:.6g}."
+                )
+            else:
+                status = "inconclusive"
+                explanation = (
+                    f"Confidence interval [{interval[0]:.6g}, {interval[1]:.6g}] crosses "
+                    f"tolerance {check.max_loss_increase:.6g}."
+                )
+        else:
+            failed = delta > check.max_loss_increase
+            status = "fail" if failed else "pass"
+            explanation = (
+                f"Loss increase {delta:.6g} exceeds tolerance {check.max_loss_increase:.6g}."
+                if failed
+                else f"Loss increase {delta:.6g} is within tolerance {check.max_loss_increase:.6g}."
+            )
         outcomes.append(
             CheckOutcome(
                 check_id=check.check_id,
@@ -596,13 +755,12 @@ def evaluate_checks(
                 loss_delta=delta,
                 max_loss_increase=check.max_loss_increase,
                 min_samples=check.min_samples,
-                status="fail" if failed else "pass",
-                explanation=(
-                    f"Loss increase {delta:.6g} exceeds tolerance "
-                    f"{check.max_loss_increase:.6g}."
-                    if failed
-                    else f"Loss increase {delta:.6g} is within tolerance "
-                    f"{check.max_loss_increase:.6g}."
+                status=status,
+                explanation=explanation,
+                confidence_interval=interval,
+                decision_method=policy.method,
+                simultaneous_confidence_level=(
+                    simultaneous_level if policy.method == "confidence" else None
                 ),
             )
         )
@@ -614,6 +772,7 @@ def evaluate_checks(
         suite_schema_version=suite.schema_version,
         threshold=suite.threshold,
         epsilon=suite.epsilon,
+        decision_policy=policy,
     )
 
 

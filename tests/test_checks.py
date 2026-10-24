@@ -8,7 +8,7 @@ import pandas as pd
 import pytest
 
 import modeldiff
-from modeldiff import CheckSuite, ModelDiffConfig, SavedCheck
+from modeldiff import CheckDecisionPolicy, CheckSuite, ModelDiffConfig, SavedCheck
 from modeldiff.analysis.regions import Condition
 from modeldiff.result import ModelDiffReport, RegionResult
 
@@ -87,7 +87,7 @@ def test_export_and_load_round_trip_preserves_conditions_and_settings(tmp_path: 
     loaded = CheckSuite.load(path)
 
     assert loaded == suite
-    assert loaded.schema_version == "1.0"
+    assert loaded.schema_version == "1.1"
     assert loaded.threshold == 0.7123456789012345
     assert loaded.epsilon == 1e-12
     assert loaded.checks[0].conditions[0].value == threshold
@@ -95,6 +95,46 @@ def test_export_and_load_round_trip_preserves_conditions_and_settings(tmp_path: 
     assert "p_value" not in loaded.checks[0].provenance
     assert suite.checks[0].id == report.export_checks(regions=[region]).checks[0].id
     assert json.loads(suite.to_json()) == suite.to_dict()
+
+
+def test_schema_10_suite_loads_with_observed_policy() -> None:
+    data = _suite(_saved_check()).to_dict()
+    data["schema_version"] = "1.0"
+    data.pop("decision_policy")
+
+    loaded = CheckSuite.from_dict(data)
+
+    assert loaded.schema_version == "1.0"
+    assert loaded.decision_policy == CheckDecisionPolicy()
+
+
+def test_confidence_policy_distinguishes_pass_fail_and_inconclusive() -> None:
+    X = pd.DataFrame({"x": np.arange(100)})
+    y = np.zeros(100)
+    baseline = np.zeros(100)
+    check = _saved_check(condition=Condition("x", ">", -1), tolerance=0.5, min_samples=100)
+    policy = CheckDecisionPolicy(method="confidence", n_bootstrap=500, random_state=7)
+
+    passed = modeldiff.evaluate_checks(
+        _suite(check), baseline, np.full(100, 0.2), X, y, decision_policy=policy
+    )
+    failed = modeldiff.evaluate_checks(
+        _suite(check), baseline, np.full(100, 0.8), X, y, decision_policy=policy
+    )
+    inconclusive = modeldiff.evaluate_checks(
+        _suite(check),
+        baseline,
+        np.r_[np.zeros(50), np.ones(50)],
+        X,
+        y,
+        decision_policy=policy,
+    )
+
+    assert passed.overall_status == "pass"
+    assert failed.overall_status == "fail"
+    assert inconclusive.overall_status == "inconclusive"
+    assert inconclusive.outcomes[0].confidence_interval is not None
+    assert 'skipped="1"' in inconclusive.to_junit_xml()
 
 
 def test_user_can_update_one_checks_name_and_policy() -> None:
@@ -130,11 +170,7 @@ def test_fixed_check_fails_then_passes_without_rediscovery() -> None:
 
 
 def test_delta_equal_to_tolerance_passes() -> None:
-    suite = _suite(
-        _saved_check(
-            condition=Condition("x", ">", -1.0), tolerance=1.0, min_samples=4
-        )
-    )
+    suite = _suite(_saved_check(condition=Condition("x", ">", -1.0), tolerance=1.0, min_samples=4))
     result = modeldiff.evaluate_checks(
         suite,
         np.zeros(4),
@@ -180,9 +216,7 @@ def test_mixed_status_counts_and_failure_precedence() -> None:
     suite = _suite(
         _saved_check(check_id="pass", condition=Condition("x", "<=", 1), min_samples=2),
         _saved_check(check_id="fail", condition=Condition("x", ">", 1), min_samples=2),
-        _saved_check(
-            check_id="small", condition=Condition("x", ">", 10), min_samples=1
-        ),
+        _saved_check(check_id="small", condition=Condition("x", ">", 10), min_samples=1),
     )
     candidate = np.array([0.0, 0.0, 0.4, 0.4])
     result = modeldiff.evaluate_checks(
@@ -318,11 +352,7 @@ def test_rmse_checks_use_mean_squared_error_loss_units() -> None:
     suite = CheckSuite(
         task="regression",
         metric="rmse",
-        checks=(
-            _saved_check(
-                condition=Condition("x", ">", -1), tolerance=3.0, min_samples=4
-            ),
-        ),
+        checks=(_saved_check(condition=Condition("x", ">", -1), tolerance=3.0, min_samples=4),),
     )
     result = modeldiff.evaluate_checks(
         suite,
